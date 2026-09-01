@@ -476,14 +476,19 @@ checkpoint before a long run and you get a named entry in version history.
 | `figma_list_library` | the components, styles and variables this file has |
 | `figma_select` | select a node and scroll the canvas to it — how you *show* someone what you found |
 | `figma_saved` | the saved set and its folders: nine actions behind one argument |
+| `figma_find_nodes` | layers by type, name and words — one call where walking the tree costs many |
+| `figma_pages` | the pages, and switching between them: everything else answers about the open one |
+| `figma_component_properties` | the variants and properties a component exposes, and what an instance is set to |
 | **making things** | |
 | `figma_create_frame`, `figma_create_text` | the two most of a layout is built from |
 | `figma_create_rectangle`, `figma_create_ellipse` | dividers, bars, avatars, placeholders |
 | `figma_create_svg` | SVG markup into real editable vectors — this is how an icon gets drawn |
 | `figma_create_instance` | place a real component, not a lookalike |
 | `figma_clone_node` | a second row that matches the first exactly |
+| `figma_insert_image` | a PNG, JPG or GIF as base64 — a new rectangle, or the fill of a layer that exists |
 | **moving them** | |
 | `figma_move_node` | reparent, or reorder among siblings |
+| `figma_group` | group several layers, or ungroup one |
 | `figma_delete_node` | take one away |
 | **changing them** | |
 | `figma_set_fill`, `figma_set_stroke` | colour, and borders — which are strokes, not fills |
@@ -495,6 +500,7 @@ checkpoint before a long run and you get a named entry in version history.
 | **through the design system** | |
 | `figma_apply_style` | a paint, text or effect style, so it keeps following that style |
 | `figma_bind_variable` | a token, so the value follows the token |
+| `figma_set_instance_properties` | which variant an instance is, and its text and booleans |
 | `figma_save_version` | a named checkpoint in version history |
 
 The last two are the ones worth reaching for. Anything can be given a hex code;

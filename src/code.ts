@@ -1,6 +1,7 @@
 // Main thread: full access to the figma API, no DOM and no network.
 import { renderFigmaCss } from './figma-css'
 import { AGENT_URL, DEFAULT_RELAY_URL } from './relays'
+import { FINDABLE_TYPES } from '../shared/nodes.mjs'
 
 const MAX_LAYERS = 500
 const MAX_BATCH = 20
@@ -2406,6 +2407,326 @@ async function bindVariable(params: Record<string, unknown>): Promise<unknown> {
   return { id: node.id, name: node.name, field, variable: variable.name }
 }
 
+// --------------------------------------------------- the rest of the file
+//
+// Everything above answers about the page that happens to be open, which is a
+// silent lie on a file that has five. `get_tree` returning nothing for a frame
+// on another page reads as "it does not exist" rather than "look elsewhere",
+// and an agent has no way to tell those apart. So: a way to see the pages, and
+// a way to search across them.
+//
+// Searching is also the cheaper half of a habit worth encouraging. Walking the
+// tree to find one component costs a round trip per level and a page of rows;
+// asking for it by type and name costs one call and a handful.
+
+const MAX_FIND = 200
+
+/** Case-insensitive substring, not a regex: a model's bad regex is a hang. */
+function contains(haystack: string, needle: string): boolean {
+  return haystack.toLowerCase().includes(needle.toLowerCase())
+}
+
+function findWithin(scope: BaseNode & ChildrenMixin, types: NodeType[]): SceneNode[] {
+  // `findAllWithCriteria` uses Figma's own index and is hundreds of times
+  // faster, but it is only offered where the node keeps one.
+  if (types.length > 0 && 'findAllWithCriteria' in scope) {
+    return (scope as PageNode).findAllWithCriteria({ types: types as ('FRAME' | 'TEXT')[] }) as SceneNode[]
+  }
+  return scope.findAll(() => true) as SceneNode[]
+}
+
+/**
+ * Nodes matching type, name and text. Every filter is optional and they narrow
+ * together, so no argument at all means "everything on this page", bounded.
+ */
+async function findNodes(params: Record<string, unknown>): Promise<unknown> {
+  const asked = Array.isArray(params.types) ? params.types.map((value) => String(value).toUpperCase()) : []
+  const unknown = asked.filter((type) => !FINDABLE_TYPES.includes(type))
+  if (unknown.length > 0) {
+    throw new Error(`Not a type this can search for: ${unknown.join(', ')}. Use one of ${FINDABLE_TYPES.join(', ')}`)
+  }
+  const types = asked as NodeType[]
+  const name = typeof params.name === 'string' ? params.name.trim() : ''
+  const text = typeof params.text === 'string' ? params.text.trim() : ''
+  const limitAsked = Number(params.limit)
+  const limit = Number.isFinite(limitAsked) && limitAsked > 0 ? Math.min(Math.floor(limitAsked), MAX_FIND) : 50
+
+  /** Where to look: one subtree, this page, or the whole file. */
+  const scopes: { page: string; scope: BaseNode & ChildrenMixin }[] = []
+  if (typeof params.nodeId === 'string' && params.nodeId !== '') {
+    const node = await resolveFor(params.nodeId, (candidate) => 'children' in candidate, 'it has no children to search')
+    scopes.push({ page: figma.currentPage.name, scope: node as SceneNode & ChildrenMixin })
+  } else if (params.allPages === true) {
+    // Another page's contents are not loaded under dynamic-page access, and
+    // searching one without loading it finds nothing rather than failing.
+    for (const page of figma.root.children) {
+      await page.loadAsync()
+      scopes.push({ page: page.name, scope: page })
+    }
+  } else {
+    scopes.push({ page: figma.currentPage.name, scope: figma.currentPage })
+  }
+
+  const rows: (TreeRow & { page: string })[] = []
+  let searched = 0
+  let truncated = false
+  for (const { page, scope } of scopes) {
+    for (const node of findWithin(scope, types)) {
+      searched += 1
+      if (types.length > 0 && !types.includes(node.type)) continue
+      if (name !== '' && !contains(node.name, name)) continue
+      if (text !== '') {
+        if (node.type !== 'TEXT') continue
+        if (!contains(node.characters, text)) continue
+      }
+      if (rows.length >= limit) {
+        truncated = true
+        break
+      }
+      rows.push({ ...toRow(node), page })
+    }
+    if (truncated) break
+  }
+  return { rows, searched, truncated, scopes: scopes.map((entry) => entry.page) }
+}
+
+/**
+ * The pages, and moving between them. Opening one is driving the canvas rather
+ * than editing it — nothing in the file changes and there is nothing to undo —
+ * so it sits outside the Edits gate, next to selecting.
+ */
+async function pages(params: Record<string, unknown>): Promise<unknown> {
+  const action = String(params.action ?? '')
+  const listed = () =>
+    figma.root.children.map((page) => ({
+      id: page.id,
+      name: page.name,
+      current: page.id === figma.currentPage.id,
+    }))
+
+  if (action === 'list') return { file: figma.root.name, pages: listed() }
+
+  if (action === 'open') {
+    const wanted = String(params.pageId ?? params.name ?? '')
+    if (wanted === '') throw new Error('Pass pageId, or name, for the page to open')
+    const page =
+      figma.root.children.find((candidate) => candidate.id === wanted) ??
+      figma.root.children.find((candidate) => contains(candidate.name, wanted))
+    if (page === undefined) throw new Error(`No page called ${wanted}. Try action "list".`)
+    await page.loadAsync()
+    await figma.setCurrentPageAsync(page)
+    // The panel is showing the old page's tree, and Figma does not promise an
+    // event for a programmatic switch.
+    sendTree()
+    scheduleSelectionExtract()
+    return { page: page.name, id: page.id, pages: listed() }
+  }
+
+  throw new Error(`Unknown pages action: ${action}. Use list or open.`)
+}
+
+/**
+ * A component's properties, and what an instance currently has them set to.
+ *
+ * This exists because `setProperties` needs the exact key, and for anything but
+ * a variant that key carries an id suffix — `Label#8:2`, not `Label`. Guessing
+ * it is not possible, so reading has to come first.
+ */
+async function componentProperties(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveFor(
+    params.nodeId,
+    (candidate) => candidate.type === 'INSTANCE' || candidate.type === 'COMPONENT' || candidate.type === 'COMPONENT_SET',
+    'only a component, a component set or an instance has properties',
+  )
+
+  const describe = (definitions: ComponentPropertyDefinitions) =>
+    Object.entries(definitions).map(([key, definition]) => ({
+      key,
+      type: definition.type,
+      defaultValue: definition.defaultValue ?? null,
+      // Variant options, or the components an instance-swap will accept.
+      options: definition.variantOptions ?? definition.preferredValues ?? null,
+    }))
+
+  if (node.type === 'COMPONENT_SET' || node.type === 'COMPONENT') {
+    return { ...toRow(node), properties: describe(node.componentPropertyDefinitions) }
+  }
+
+  // The predicate above has already refused anything else; `resolveFor` hands
+  // back a SceneNode, so the narrowing has to be said out loud.
+  const instance = node as InstanceNode
+  const main = await instance.getMainComponentAsync()
+  // A variant's properties are defined on the set, not on the variant.
+  const owner = main === null ? null : main.parent?.type === 'COMPONENT_SET' ? main.parent : main
+  return {
+    ...toRow(instance),
+    mainComponent: main === null ? null : { id: main.id, name: main.name },
+    properties: owner === null ? [] : describe(owner.componentPropertyDefinitions),
+    values: Object.entries(instance.componentProperties).map(([key, property]) => ({
+      key,
+      type: property.type,
+      value: property.value,
+    })),
+  }
+}
+
+// ------------------------------------------------------------- more writing
+
+/**
+ * Group and ungroup. Figma needs a parent for a new group, and the answer is
+ * always the first node's own parent: a group that lands somewhere else is not
+ * what anybody meant by "group these".
+ */
+async function groupNodes(params: Record<string, unknown>): Promise<unknown> {
+  const action = String(params.action ?? 'group')
+
+  if (action === 'ungroup') {
+    const node = await resolveFor(
+      params.nodeId,
+      (candidate) => candidate.type === 'GROUP' || candidate.type === 'FRAME',
+      'only a group or a frame can be ungrouped',
+    )
+    const parentId = node.parent?.id ?? null
+    const children = figma.ungroup(node as SceneNode & ChildrenMixin)
+    afterMutation(true)
+    return { ungrouped: children.map(toRow), parentId }
+  }
+
+  if (action !== 'group') throw new Error(`Unknown group action: ${action}. Use group or ungroup.`)
+
+  const ids = Array.isArray(params.nodeIds) ? params.nodeIds.map(String).filter((id) => id !== '') : []
+  if (ids.length === 0) throw new Error('Pass nodeIds as a non-empty array of node ids')
+  const nodes: SceneNode[] = []
+  for (const id of ids.slice(0, MAX_BATCH)) nodes.push(await resolveScene(id))
+
+  const parent = nodes[0].parent
+  if (parent === null || !('appendChild' in parent)) throw new Error(`${nodes[0].name} has no parent to group inside`)
+  const group = figma.group(nodes, parent as BaseNode & ChildrenMixin)
+  if (typeof params.name === 'string' && params.name !== '') group.name = params.name
+  afterMutation(true)
+  return { ...toRow(group), parentId: parent.id }
+}
+
+/**
+ * Base64 in, an image on the canvas out.
+ *
+ * Bytes rather than a URL because the manifest's `allowedDomains` names the
+ * relay and the local daemon and nothing else — `createImageAsync` against
+ * anywhere a designer would actually keep an image is blocked, and would fail
+ * as a network error that says nothing about why.
+ */
+const MAX_INSERT_BASE64 = 700_000
+
+/** The sandbox has no atob, so this is the other direction of `toBase64`. */
+function fromBase64(text: string): Uint8Array {
+  const clean = text.replace(/^data:[^,]*,/, '').replace(/[\s]/g, '')
+  const sized = clean.replace(/=+$/, '')
+  const bytes = new Uint8Array(Math.floor((sized.length * 3) / 4))
+  let at = 0
+  let buffer = 0
+  let bits = 0
+  for (const character of sized) {
+    const value = BASE64_ALPHABET.indexOf(character)
+    if (value === -1) throw new Error('The image data is not base64')
+    buffer = (buffer << 6) | value
+    bits += 6
+    if (bits >= 8) {
+      bits -= 8
+      bytes[at++] = (buffer >> bits) & 0xff
+    }
+  }
+  return bytes.subarray(0, at)
+}
+
+async function insertImage(params: Record<string, unknown>): Promise<unknown> {
+  const data = typeof params.data === 'string' ? params.data : ''
+  if (data === '') throw new Error('Pass data: the image as base64, PNG, JPG or GIF')
+  if (data.length > MAX_INSERT_BASE64) {
+    throw new Error(
+      `That image is ${Math.ceil(data.length / 1000)}KB of base64 and the limit is ${MAX_INSERT_BASE64 / 1000}KB. ` +
+        'Export it smaller, or at a lower scale.',
+    )
+  }
+
+  let image: Image
+  try {
+    image = figma.createImage(fromBase64(data))
+  } catch (error) {
+    throw new Error(`Figma would not read that as an image: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const size = await image.getSizeAsync()
+  const scaleMode = (typeof params.scaleMode === 'string' ? params.scaleMode.toUpperCase() : 'FILL') as
+    | 'FILL'
+    | 'FIT'
+    | 'CROP'
+    | 'TILE'
+  const paint: ImagePaint = { type: 'IMAGE', imageHash: image.hash, scaleMode }
+
+  // Onto a layer that already exists, which is how a placeholder gets its
+  // picture without anything moving.
+  if (typeof params.nodeId === 'string' && params.nodeId !== '') {
+    const node = await resolveFor(params.nodeId, (candidate) => 'fills' in candidate, 'it cannot take a fill')
+    ;(node as GeometryMixin).fills = [paint]
+    afterMutation()
+    return { ...toRow(node), image: size, scaleMode }
+  }
+
+  const parent =
+    params.parentId === undefined || params.parentId === ''
+      ? figma.currentPage
+      : await resolveFor(params.parentId, (candidate) => 'appendChild' in candidate, 'it cannot hold children')
+  const rectangle = figma.createRectangle()
+  rectangle.name = typeof params.name === 'string' && params.name !== '' ? params.name : 'Image'
+  rectangle.x = params.x === undefined ? 0 : readNumber(params.x, 'x')
+  rectangle.y = params.y === undefined ? 0 : readNumber(params.y, 'y')
+  // Its own size unless told otherwise: an image squeezed into a default 100x100
+  // is a bug report waiting to happen.
+  rectangle.resize(
+    params.width === undefined ? Math.max(1, size.width) : Math.max(1, readNumber(params.width, 'width')),
+    params.height === undefined ? Math.max(1, size.height) : Math.max(1, readNumber(params.height, 'height')),
+  )
+  rectangle.fills = [paint]
+  ;(parent as ChildrenMixin).appendChild(rectangle)
+  afterMutation(true)
+  return { ...toRow(rectangle), parentId: parent.id, image: size, scaleMode }
+}
+
+/**
+ * Set an instance's properties: which variant it is, and the text and booleans
+ * the component exposes. `figma_component_properties` is where the keys come
+ * from, and a wrong one is refused with the list rather than ignored.
+ */
+async function setInstanceProperties(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveFor(params.nodeId, (candidate) => candidate.type === 'INSTANCE', 'only an instance has properties to set')
+  const instance = node as InstanceNode
+  const wanted = params.properties
+  if (wanted === null || typeof wanted !== 'object' || Array.isArray(wanted)) {
+    throw new Error('Pass properties as an object of key to value, from figma_component_properties')
+  }
+
+  const known = Object.keys(instance.componentProperties)
+  const properties: { [key: string]: string | boolean } = {}
+  for (const [key, value] of Object.entries(wanted as Record<string, unknown>)) {
+    // A key that is nearly right — the name without its id suffix — is the
+    // predictable mistake, so it is named rather than left to Figma's message.
+    const match = known.includes(key) ? key : known.find((candidate) => candidate.split('#')[0] === key)
+    if (match === undefined) throw new Error(`${instance.name} has no property ${key}. It has: ${known.join(', ') || 'none'}`)
+    properties[match] = typeof value === 'boolean' ? value : String(value)
+  }
+
+  try {
+    instance.setProperties(properties)
+  } catch (error) {
+    throw new Error(`That value was refused: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  // Swapping a variant can change the layer's whole subtree.
+  afterMutation(true)
+  return {
+    ...toRow(instance),
+    values: Object.entries(instance.componentProperties).map(([key, property]) => ({ key, value: property.value })),
+  }
+}
+
 /** Commands the relay can issue. Errors are returned to the caller, not thrown away. */
 async function handleRequest(command: string, params: Record<string, unknown>): Promise<unknown> {
   switch (command) {
@@ -2585,6 +2906,18 @@ async function handleRequest(command: string, params: Record<string, unknown>): 
       return setAutoLayout(params)
     case 'create_frame':
       return createFrame(params)
+    case 'find_nodes':
+      return findNodes(params)
+    case 'pages':
+      return pages(params)
+    case 'component_properties':
+      return componentProperties(params)
+    case 'group_nodes':
+      return groupNodes(params)
+    case 'insert_image':
+      return insertImage(params)
+    case 'set_instance_properties':
+      return setInstanceProperties(params)
     case 'save_version':
       return saveVersion(params)
     case 'extract': {

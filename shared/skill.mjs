@@ -89,10 +89,19 @@ is not enough.
 
 ## Finding the node you want
 
-With the tools: \`figma_get_selection\`, \`figma_get_tree\` and
-\`figma_get_children\` walk the page; \`figma_saved\` with
+With the tools: \`figma_find_nodes\` is the one to reach for first —
+\`{"types":["INSTANCE"],"name":"button"}\` is one call where walking the tree is
+a round trip per level and every sibling you did not want. \`figma_get_selection\`,
+\`figma_get_tree\` and \`figma_get_children\` walk the page when you want its
+shape rather than one layer; \`figma_saved\` with
 \`{"action":"list"}\` or \`{"action":"folders"}\` reads the set the designer
-curated. \`figma_select\` is the other direction — it selects a node and scrolls
+curated.
+
+**Every one of those answers about the page that is open.** A frame on another
+page reads exactly like a frame that does not exist, so before telling anyone
+something is missing: \`figma_pages\` with \`{"action":"list"}\`, or
+\`figma_find_nodes\` with \`{"allPages":true}\`, which names the page each row
+is on. \`figma_pages\` with \`{"action":"open"}\` goes there. \`figma_select\` is the other direction — it selects a node and scrolls
 the canvas to it, which is how you *show* the designer what you found rather
 than reciting an id at them. Over HTTP instead:
 
@@ -247,7 +256,11 @@ the components, styles and variables this file has, with their ids. Then:
 
 - \`figma_apply_style\` for a colour or type that has a named style
 - \`figma_bind_variable\` for a value that has a token
-- \`figma_create_instance\` rather than drawing a lookalike
+- \`figma_create_instance\` rather than drawing a lookalike, then
+  \`figma_set_instance_properties\` to make it the right variant with the right
+  label — a placed instance is the component's default until you do, and
+  \`figma_component_properties\` is where the keys come from, because for
+  anything but a variant the key carries an id suffix you cannot guess
 
 A hex code you picked will look right today and be wrong after the next
 redesign; a style or a variable follows the system. Reach for \`figma_set_fill\`
@@ -255,8 +268,9 @@ with a literal colour only when the file has nothing named for it.
 
 The rest, briefly. Making: \`figma_create_frame\`, \`figma_create_text\`,
 \`figma_create_rectangle\`, \`figma_create_ellipse\`, \`figma_create_svg\` (real
-editable vectors, which is how an icon gets drawn), \`figma_clone_node\`. Moving:
-\`figma_move_node\`, \`figma_delete_node\`. Changing: \`figma_set_fill\`,
+editable vectors, which is how an icon gets drawn), \`figma_clone_node\`,
+\`figma_insert_image\` (base64 bytes, because the plugin is not allowed to fetch
+a URL). Moving: \`figma_move_node\`, \`figma_group\`, \`figma_delete_node\`. Changing: \`figma_set_fill\`,
 \`figma_set_stroke\`, \`figma_set_text\`, \`figma_set_text_style\`,
 \`figma_set_bounds\`, \`figma_set_corner_radius\`, \`figma_set_effects\`,
 \`figma_set_visibility\`, \`figma_set_node_name\`, \`figma_set_auto_layout\`,
