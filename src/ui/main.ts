@@ -87,7 +87,7 @@ type FromPlugin =
   | { type: 'save-result'; added: number; already: number; moved: number; full: number; folder: string }
   | { type: 'thumb'; id: string | null; png: Uint8Array | null }
   | { type: 'sync'; fileId: string; folders: string[]; entries: SavedEntry[]; updatedAt: number }
-  | { type: 'tree'; page: string; rows: IncomingRow[]; truncated: boolean }
+  | { type: 'tree'; page: string; file?: string; rows: IncomingRow[]; truncated: boolean }
   | { type: 'children'; parentId: string; rows: IncomingRow[]; truncated: boolean }
   | { type: 'busy' }
   | { type: 'error'; message: string }
@@ -200,6 +200,8 @@ const agentIdle = document.getElementById('agent-idle') as HTMLDivElement
 const agentSetupLink = document.getElementById('agent-setup-link') as HTMLButtonElement
 const agentMore = document.getElementById('agent-more') as HTMLButtonElement
 const agentMoreMenu = document.getElementById('agent-more-menu') as HTMLDivElement
+const agentHistoryOpen = document.getElementById('agent-history-open') as HTMLButtonElement
+const agentHistoryMenu = document.getElementById('agent-history-menu') as HTMLDivElement
 const agentPage = document.getElementById('agent-page') as HTMLDivElement
 const agentPageToggle = document.getElementById('agent-toggle-page') as HTMLButtonElement
 const agentUrlInput = document.getElementById('agent-url') as HTMLInputElement
@@ -2116,6 +2118,7 @@ window.addEventListener('message', (event: MessageEvent) => {
       renderTree()
       if (!selectedId) {
         currentPageName = msg.page
+        if (typeof msg.file === 'string') currentFileName = msg.file
         title.textContent = msg.page
         const count = msg.rows.length === 1 ? '1 top-level layer' : `${msg.rows.length} top-level layers`
         subtitle.textContent = msg.truncated ? `${count} (truncated)` : count
@@ -2272,6 +2275,16 @@ type AgentMode = { id: string; name: string; description?: string | null }
 
 type AgentCommand = { name: string; description: string }
 
+type AgentSessionRecord = {
+  id: string
+  harness: string
+  harnessName: string
+  cwd: string
+  file: string | null
+  title: string | null
+  updatedAt: number
+}
+
 type AgentSessionState = {
   harness: { id: string; name: string } | null
   sessionId: string | null
@@ -2318,6 +2331,10 @@ let agentWrites = false
 let agentAuto = true
 /** Tool names the daemon marked as writing, so a call that touches the file shows it. */
 let agentWriteTools = new Set<string>()
+let agentSessions: AgentSessionRecord[] = []
+// The Figma file this panel is looking at, so a saved conversation can say
+// which design it was about and not only which folder it ran in.
+let currentFileName = ''
 
 /** The HTTP face of the daemon, given its socket address. */
 function agentHttpBase(): string {
@@ -2764,6 +2781,11 @@ function agentClearLog() {
 
 function handleAgentFrame(message: Record<string, unknown>) {
   switch (message.kind) {
+    case 'sessions':
+      agentSessions = (message.sessions as AgentSessionRecord[]) ?? []
+      if (!agentHistoryMenu.hidden) renderHistory()
+      break
+
     case 'harnesses':
       agentHarnesses = (message.harnesses as AgentHarness[]) ?? []
       if (agentHarnessId !== '' && !agentHarnesses.some((harness) => harness.id === agentHarnessId)) {
@@ -3055,6 +3077,7 @@ function closeMenus() {
   agentMoreMenu.hidden = true
   agentAttachMenu.hidden = true
   agentFolderMenu.hidden = true
+  agentHistoryMenu.hidden = true
   agentModeMenu.hidden = true
   agentMore.setAttribute('aria-expanded', 'false')
   agentModePicker.setAttribute('aria-expanded', 'false')
@@ -3075,7 +3098,8 @@ document.addEventListener('click', (event: Event) => {
   if (
     target.closest(
       '#agent-more, #agent-more-menu, #agent-context-add, #agent-attach-menu,' +
-        ' #agent-session, #agent-folder-menu, #agent-mode, #agent-mode-menu',
+        ' #agent-session, #agent-folder-menu, #agent-mode, #agent-mode-menu,' +
+        ' #agent-history-open, #agent-history-menu',
     )
   ) {
     return
@@ -3148,6 +3172,98 @@ agentPage.addEventListener('click', async (event: Event) => {
 agentSetupLink.addEventListener('click', () => {
   closeMenus()
   setView('agent')
+})
+
+// ---------------------------------------------------------------- history
+//
+// A session belongs to a harness and a directory as much as to an id, so
+// resuming one is a full start with all three — picking yesterday's Codex
+// conversation relaunches Codex, in the folder it ran in.
+
+/** How long ago, at the resolution anyone actually cares about. */
+function ago(at: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
+  if (seconds < 90) return 'just now'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  return days === 1 ? 'yesterday' : `${days}d ago`
+}
+
+function renderHistory() {
+  agentHistoryMenu.textContent = ''
+  if (agentSessions.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'subtitle'
+    empty.style.margin = '6px 8px'
+    empty.textContent = 'No conversations yet. The first one you start will be here.'
+    agentHistoryMenu.appendChild(empty)
+    return
+  }
+
+  for (const record of agentSessions) {
+    const row = document.createElement('div')
+    row.className = `history-row${record.id === agentSession.sessionId ? ' current' : ''}`
+
+    const open = document.createElement('button')
+    open.type = 'button'
+    open.className = 'history-open'
+    const title = document.createElement('span')
+    title.className = 'title'
+    title.textContent = record.title ?? 'Untitled'
+    const about = document.createElement('span')
+    about.className = 'about'
+    about.textContent = [
+      record.harnessName,
+      shortDirectory(record.cwd),
+      record.file ?? null,
+      ago(record.updatedAt),
+    ]
+      .filter((part) => part !== null && part !== '')
+      .join(' · ')
+    open.append(title, about)
+    open.title = `${record.title ?? 'Untitled'}\n${record.cwd}`
+    open.addEventListener('click', () => {
+      closeMenus()
+      if (record.id === agentSession.sessionId) return
+      agentHarnessId = record.harness
+      agentCwd = record.cwd
+      agentSessionId = record.id
+      saveAgentSettings()
+      agentLog.textContent = ''
+      agentBridge.send({
+        kind: 'start',
+        harness: record.harness,
+        cwd: record.cwd,
+        resume: record.id,
+        file: currentFileName,
+      })
+    })
+
+    const drop = document.createElement('button')
+    drop.type = 'button'
+    drop.className = 'drop'
+    drop.textContent = '✕'
+    drop.title = 'Forget this conversation'
+    drop.addEventListener('click', (event: Event) => {
+      event.stopPropagation()
+      agentBridge.send({ kind: 'forget', id: record.id })
+    })
+
+    row.append(open, drop)
+    agentHistoryMenu.appendChild(row)
+  }
+}
+
+agentHistoryOpen.addEventListener('click', (event: Event) => {
+  event.stopPropagation()
+  closeMenus()
+  agentHistoryMenu.hidden = false
+  renderHistory()
+  // The harness may know more than this daemon does; ask while it is on screen.
+  agentBridge.send({ kind: 'sessions' })
 })
 
 // ------------------------------------------------------------ folder picker
@@ -3234,7 +3350,7 @@ agentFolderUse.addEventListener('click', () => {
   if (agentSession.sessionId !== null) {
     agentSessionId = ''
     agentLog.textContent = ''
-    agentBridge.send({ kind: 'start', harness: agentHarnessId, cwd: agentCwd, resume: '' })
+    agentBridge.send({ kind: 'start', harness: agentHarnessId, cwd: agentCwd, resume: '', file: currentFileName })
   }
   refreshAgentPage()
 })
@@ -3739,6 +3855,7 @@ agentStartButton.addEventListener('click', () => {
     // A stored id from a previous run is offered, not insisted on: the daemon
     // falls back to a new session when the harness cannot load it.
     resume: agentSessionId,
+    file: currentFileName,
   })
 })
 

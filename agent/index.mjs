@@ -28,6 +28,7 @@ import { homedir } from 'node:os'
 import { WebSocketServer } from 'ws'
 import { createPluginSocket } from './lib/plugin-socket.mjs'
 import { createRunner } from './lib/acp.mjs'
+import { createSessionStore } from './lib/sessions.mjs'
 import { createHttpHandler } from './lib/http.mjs'
 import { findHarness, surveyHarnesses } from './lib/harnesses.mjs'
 
@@ -93,11 +94,14 @@ const mcpServers = [
   },
 ]
 
+const sessions = createSessionStore({ log })
+
 const runner = createRunner({
   plugin,
   log,
   emit: (frame) => plugin.send(frame),
   mcpServers,
+  sessions,
 })
 
 const server = createServer(createHttpHandler({ plugin, runner, token: TOKEN, version: VERSION }))
@@ -115,7 +119,16 @@ async function onPanelFrame(message) {
     switch (message.kind) {
       case 'hello':
         plugin.send({ kind: 'harnesses', harnesses: await surveyHarnesses() })
+        plugin.send({ kind: 'sessions', sessions: await sessions.all() })
         runner.announce()
+        break
+
+      case 'sessions':
+        await runner.publishSessions()
+        break
+
+      case 'forget':
+        await runner.forgetSession(String(message.id ?? ''))
         break
 
       case 'start': {
@@ -125,6 +138,7 @@ async function onPanelFrame(message) {
           harness,
           cwd: String(message.cwd ?? process.cwd()),
           resume: typeof message.resume === 'string' && message.resume !== '' ? message.resume : null,
+          file: message.file ?? null,
         })
         break
       }

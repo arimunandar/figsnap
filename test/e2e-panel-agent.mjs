@@ -227,6 +227,9 @@ check('the session id is stored, so a torn-down runtime can resume', lastStored(
 
 // Ending the turn is what closes an answer off, so a suite that wants a clean
 // transcript ends one rather than reaching into the DOM behind the panel.
+// Clicking the panel's own body is how a menu is dismissed.
+const closeAllMenus = () => window.document.body.click()
+
 const agentClear = async () => {
   push({ kind: 'turn', status: 'ended', stopReason: 'end_turn' })
   await settle()
@@ -471,6 +474,53 @@ push({
 })
 await settle()
 check('the strip follows it', id('agent-session').textContent === 'Claude Code · work', id('agent-session').textContent)
+
+// ------------------------------------------------------------------ history
+
+push({
+  kind: 'sessions',
+  sessions: [
+    { id: 's2', harness: 'claude', harnessName: 'Claude Code', cwd: '/Users/designer/work',
+      file: 'Bonds', title: 'make the CTA match our button', updatedAt: Date.now() - 3 * 60_000 },
+    { id: 'old', harness: 'codex', harnessName: 'Codex', cwd: '/Users/designer/checkout-app',
+      file: 'Checkout', title: 'write the sheet as a component', updatedAt: Date.now() - 26 * 3_600_000 },
+  ],
+})
+await settle()
+
+id('agent-more').click()
+await settle()
+id('agent-history-open').click()
+await settle()
+const rows = () => [...id('agent-history-menu').querySelectorAll('.history-row')]
+check('history lists what was said before', rows().length === 2)
+check('titled by the question that started it',
+  rows()[0].querySelector('.title').textContent === 'make the CTA match our button')
+// A conversation belongs to a harness and a folder as much as to an id.
+check('and says which harness and folder it belongs to',
+  rows()[1].querySelector('.about').textContent === 'Codex · checkout-app · Checkout · yesterday',
+  rows()[1].querySelector('.about').textContent)
+check('the one in use is marked', rows()[0].classList.contains('current'))
+
+received.length = 0
+rows()[1].querySelector('.history-open').click()
+await settle()
+check('opening an old one relaunches its harness, in its folder',
+  sawFrame('start')?.harness === 'codex' && sawFrame('start')?.cwd === '/Users/designer/checkout-app',
+  JSON.stringify(sawFrame('start')))
+check('asking the harness to replay rather than start over', sawFrame('start')?.resume === 'old')
+check('and the menu closes', id('agent-history-menu').hidden === true)
+
+id('agent-more').click()
+await settle()
+id('agent-history-open').click()
+await settle()
+received.length = 0
+rows()[0].querySelector('.drop').click()
+await settle()
+check('one can be forgotten from the list', sawFrame('forget')?.id === 's2')
+closeAllMenus()
+await settle()
 
 // ------------------------------------------------------------- modes, files
 

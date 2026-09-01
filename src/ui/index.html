@@ -194,11 +194,16 @@
                 <span class="name">Setup</span>
                 <span class="about">Daemon, harness and directory</span>
               </button>
+              <button class="command" type="button" id="agent-history-open">
+                <span class="name">History</span>
+                <span class="about">Pick up an earlier conversation</span>
+              </button>
               <button class="command" type="button" id="agent-stop">
                 <span class="name">End session</span>
                 <span class="about">Stops the harness</span>
               </button>
             </div>
+            <div class="command-menu history-menu" id="agent-history-menu" hidden></div>
           </header>
 
           <div class="agent-empty" id="agent-idle">
@@ -378,6 +383,12 @@
           <code>Origin</code> of the handshake, which a browser cannot forge, and
           requires the token above, which a browser <code>WebSocket</code> cannot
           send in a header and so travels in the address.
+        </p>
+        <p>
+          <strong>⋯ → History</strong> lists earlier conversations, titled by the
+          question that started each one and labelled with the harness, the
+          folder and the file it belonged to. Opening one relaunches that
+          harness in that folder and asks it to replay.
         </p>
         <p>
           A plugin exists only while you have it open — there is no background

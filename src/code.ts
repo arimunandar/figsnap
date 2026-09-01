@@ -59,7 +59,7 @@ type Extraction = {
 
 type ToUI =
   | Extraction
-  | { type: 'tree'; page: string; rows: TreeRow[]; truncated: boolean }
+  | { type: 'tree'; page: string; file?: string; rows: TreeRow[]; truncated: boolean }
   | { type: 'children'; parentId: string; rows: TreeRow[]; truncated: boolean }
   | { type: 'selected'; id: string | null; ids: string[]; rows: TreeRow[] }
   | { type: 'busy' }
@@ -1039,7 +1039,9 @@ async function childrenData(id: string, depth = 1) {
 
 function sendTree(): void {
   const data = treeData(AUTO_TREE_DEPTH)
-  send({ type: 'tree', page: data.page, rows: data.rows, truncated: data.truncated })
+  // The file's name rides along so a saved conversation can say which design it
+  // was about, not only which folder it ran in.
+  send({ type: 'tree', page: data.page, file: figma.root.name, rows: data.rows, truncated: data.truncated })
 }
 
 async function sendChildren(id: string): Promise<void> {

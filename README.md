@@ -147,6 +147,7 @@ src/ui/bridge.ts   UI thread: WebSocket link to the relay and to the daemon
 src/ui/markdown.ts UI thread: the Markdown subset an agent actually writes
 agent/index.mjs    The local bridge daemon: WS server, ACP client, MCP server
 agent/lib/tools.mjs   The figma_* tools an agent is handed
+agent/lib/sessions.mjs  What was said before, so it can be picked up again
 agent/mcp-stdio.mjs   figsnap-mcp: the figma_* tools, for the harness or any MCP client
 probe/             Throwaway: measures how long Figma leaves a plugin running
 src/ui/index.html  UI template; build.mjs fills in <!-- STYLE --> and <!-- SCRIPT -->
@@ -381,6 +382,15 @@ with the message too — a model that can look at the frame settles questions
 about spacing and colour that no description would. Attached files ride as
 images or as embedded resources depending on what the harness takes; anything it
 takes neither of is reported rather than dropped in silence.
+
+**⋯ → History** lists what was said before — titled by the question that started
+it, and labelled with the harness, the folder and the file it belonged to.
+Opening one relaunches that harness in that folder and asks it to replay, so
+picking up yesterday's Codex conversation does not mean starting over in Claude
+Code. Where a harness supports ACP's own `session/list` its titles win; the
+local record at `~/.figsnap/sessions.json` is what spans harnesses, since no
+harness knows about the others. Forgetting one drops it there and, where the
+harness will take the instruction, from the harness too.
 
 Type while it is still answering and the message queues, shown dimmed until its
 turn. **Stop** replaces Send while a turn runs. A slash offers whatever commands

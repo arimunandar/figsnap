@@ -2281,6 +2281,61 @@ button.agent-session:hover {
   color: var(--figma-color-text, #000);
 }
 
+/* A list of conversations needs room for a sentence and a date. */
+.history-menu {
+  right: 0;
+  left: auto;
+  top: calc(100% + 6px);
+  bottom: auto;
+  width: min(340px, calc(100vw - 24px));
+  max-height: 320px;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 7px;
+  border-radius: 6px;
+}
+
+.history-row:hover {
+  background: var(--figma-color-bg-selected, rgba(13, 153, 255, 0.15));
+}
+
+.history-open {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-open .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-open .about {
+  overflow: hidden;
+  color: var(--figma-color-text-secondary, #666);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-row.current .title {
+  font-weight: 600;
+}
+
 /* Anchored to the + rather than stretched across the composer. */
 .attach-menu {
   right: auto;

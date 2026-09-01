@@ -11,6 +11,8 @@
 
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { WebSocket } from 'ws'
@@ -37,6 +39,7 @@ function freePort() {
   })
 }
 
+const HOME = await mkdtemp(join(tmpdir(), 'figsnap-suite-'))
 const PORT = await freePort()
 const BASE = `http://127.0.0.1:${PORT}`
 
@@ -50,6 +53,9 @@ const daemon = spawn(process.execPath, [join(root, 'agent/index.mjs'), '--quiet'
     // which is also how anyone plugs in an adapter this daemon has never heard of.
     FIGSNAP_AGENT_COMMAND: `node ${FAKE}`,
     FIGSNAP_AGENT_NAME: 'Fake harness',
+    // The session store lives under $HOME; this suite gets a throwaway one so
+    // it neither reads nor writes the machine's real history.
+    HOME: HOME,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -465,6 +471,38 @@ check('and a wrong token points at the file the right one is in',
   rejected.content[0].text.slice(0, 90))
 await wrongToken.close()
 
+// ------------------------------------------------------------------ history
+//
+// A session belongs to a harness and a directory as much as to an id, so the
+// list has to carry all three: picking yesterday's conversation has to know
+// what to relaunch and where.
+
+panel.frames.length = 0
+panel.send({ kind: 'sessions' })
+const history = await panel.wait((frame) => frame.kind === 'sessions', 'the history')
+check('the session that was opened is remembered', history.sessions.length === 1, JSON.stringify(history.sessions))
+const only = history.sessions[0]
+check('with what it would take to reopen it',
+  only.id === 'fake-session-1' && only.harness === 'custom' && only.cwd === root,
+  JSON.stringify({ id: only.id, harness: only.harness }))
+check('and titled by the first thing that was asked',
+  only.title === 'what is selected', JSON.stringify(only.title))
+
+// Later questions move a conversation up the list; they do not rename it.
+panel.frames.length = 0
+panel.send({ kind: 'prompt', text: 'something else entirely' })
+await panel.wait((frame) => frame.kind === 'turn' && frame.status === 'ended', 'the second turn')
+panel.frames.length = 0
+panel.send({ kind: 'sessions' })
+const stillTitled = await panel.wait((frame) => frame.kind === 'sessions', 'the history again')
+check('and a second question does not retitle it',
+  stillTitled.sessions[0].title === 'what is selected', JSON.stringify(stillTitled.sessions[0].title))
+
+panel.frames.length = 0
+panel.send({ kind: 'forget', id: 'fake-session-1' })
+const forgotten = await panel.wait((frame) => frame.kind === 'sessions', 'the shorter history')
+check('one can be forgotten', forgotten.sessions.length === 0, JSON.stringify(forgotten.sessions))
+
 // -------------------------------------------------------------- resumption
 //
 // A plugin's runtime can be taken away mid-conversation, so a panel that comes
@@ -487,6 +525,7 @@ check('including what was asked', again.spoken('user_message_chunk') === 'what i
 
 again.socket.close()
 daemon.kill('SIGTERM')
+await rm(HOME, { recursive: true, force: true })
 
 const failed = out.filter((ok) => !ok).length
 console.log(`\n${out.length - failed}/${out.length} passed`)

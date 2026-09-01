@@ -31,7 +31,7 @@ function within(root, path) {
   throw new Error(`Outside the session directory: ${path}`)
 }
 
-export function createRunner({ plugin, log, emit, mcpServers }) {
+export function createRunner({ plugin, log, emit, mcpServers, sessions }) {
   let child = null
   let connection = null
   let sessionId = null
@@ -45,6 +45,9 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
   let capabilities = {}
   let modes = null
   let commands = []
+  // What the Figma side of a session was about, so the history can say which
+  // file a conversation belonged to rather than only which folder.
+  let file = null
   // Writes are a switch the designer holds, not a prompt the agent can talk
   // past: a harness told to skip permissions would otherwise reach the canvas
   // unannounced. See `mutates` in lib/tools.mjs.
@@ -323,10 +326,42 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
    * conversation is started fresh rather than reported as broken, because the
    * panel's stored id outlives the agent that issued it.
    */
-  async function start({ harness: next, cwd: directory, resume }) {
+  /**
+   * The history the panel shows: what this daemon has opened, plus whatever the
+   * harness itself remembers where it supports being asked.
+   */
+  async function publishSessions() {
+    let list = await sessions.all()
+    if (connection !== null && capabilities.sessionCapabilities?.list) {
+      try {
+        const answer = await connection.agent.request(acp.methods.agent.session.list, {})
+        list = await sessions.merge(harness?.id ?? '', answer?.sessions ?? [])
+      } catch (error) {
+        log(`the harness would not list its sessions: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    emit({ kind: 'sessions', sessions: list })
+  }
+
+  async function forgetSession(id) {
+    // Dropped from the harness too where it will take the instruction; a list
+    // that keeps offering a conversation the harness has thrown away is worse
+    // than no list.
+    if (connection !== null && capabilities.sessionCapabilities?.delete) {
+      try {
+        await connection.agent.request(acp.methods.agent.session.delete, { sessionId: id })
+      } catch (error) {
+        log(`the harness would not delete ${id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    emit({ kind: 'sessions', sessions: await sessions.forget(id) })
+  }
+
+  async function start({ harness: next, cwd: directory, resume, file: openFile }) {
     await stop('replaced by a new session')
     harness = next
     cwd = resolve(directory)
+    if (openFile !== undefined && openFile !== null) file = openFile
 
     const command = process.platform === 'win32' && next.command === 'npx' ? 'npx.cmd' : next.command
     log(`launching ${next.name}: ${command} ${next.args.join(' ')}`)
@@ -390,6 +425,7 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
         })
         modes = reloaded?.modes ?? null
         sessionId = resume
+        await sessions.remember({ id: resume, harness: next.id, harnessName: next.name, cwd, file })
         log(`resumed session ${resume}`)
         announce()
         return state()
@@ -418,8 +454,10 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
     }
     modes = opened.modes ?? null
     sessionId = opened.sessionId
+    await sessions.remember({ id: sessionId, harness: next.id, harnessName: next.name, cwd, file })
     log(`session ${sessionId} on ${next.name}`)
     announce()
+    void publishSessions()
     return state()
   }
 
@@ -493,6 +531,8 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
       notice('warn', `${harness?.name ?? 'This harness'} cannot take attachments, so ${refused.join(', ')} was left out.`)
     }
 
+    void sessions.touch(sessionId, text).then((list) => emit({ kind: 'sessions', sessions: list }))
+
     turn = { at: Date.now() }
     emit({ kind: 'turn', status: 'started' })
     // Announced rather than only signalled: the panel decides from this whether
@@ -536,6 +576,8 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
     answerPermission,
     state,
     announce,
+    publishSessions,
+    forgetSession,
     setWrites(on) {
       writes = on === true
       announce()
