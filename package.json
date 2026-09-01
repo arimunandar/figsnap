@@ -1,0 +1,41 @@
+{
+  "name": "figsnap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Figma plugin that extracts a selected layer as a PNG, a React component and CSS, with a local relay so an agent can read the same designs over HTTP.",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "figsnap-relay": "server/relay.mjs"
+  },
+  "files": [
+    "server",
+    "shared",
+    "worker",
+    "manifest.json",
+    "README.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "relay": "node server/relay.mjs",
+    "worker:dev": "wrangler dev --config worker/wrangler.jsonc",
+    "worker:check": "wrangler deploy --dry-run --config worker/wrangler.jsonc",
+    "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",
+    "test": "node test/run.mjs",
+    "smoke": "node scripts/smoke-hosted.mjs",
+    "api": "node scripts/api.mjs"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.136.0",
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.0.1",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

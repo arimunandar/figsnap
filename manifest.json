@@ -1,0 +1,24 @@
+{
+  "name": "Figsnap",
+  "id": "REPLACE_ON_PUBLISH",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "editorType": [
+    "figma"
+  ],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": [
+      "none"
+    ],
+    "devAllowedDomains": [
+      "ws://localhost:3055",
+      "http://localhost:3055",
+      "wss://figsnap-relay.arimunandar-dev.workers.dev",
+      "https://figsnap-relay.arimunandar-dev.workers.dev"
+    ],
+    "reasoning": "Talks to a Figsnap relay, either on the developer's machine or on their own Cloudflare Worker."
+  },
+  "enablePrivatePluginApi": true
+}

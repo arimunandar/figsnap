@@ -1,0 +1,1679 @@
+// Main thread: full access to the figma API, no DOM and no network.
+import { renderFigmaCss } from './figma-css'
+import { DEFAULT_RELAY_URL } from './relays'
+
+const MAX_LAYERS = 500
+const MAX_BATCH = 20
+const MAX_SAVED = 100
+const MAX_FOLDERS = 30
+const MAX_FOLDER_NAME = 40
+const MAX_TREE_ROWS = 300
+// A deep walk is bounded by total nodes, not by level: one page can hold far more
+// than a caller wants back in a single response, and an unbounded walk of a real
+// design file is measured in tens of thousands of vectors.
+const MAX_TREE_NODES = 2000
+const DEBOUNCE_MS = 250
+
+type TreeRow = {
+  id: string
+  name: string
+  type: string
+  width: number
+  height: number
+  childCount: number
+  /** Present only when the walk went deeper than this row. */
+  children?: TreeRow[]
+}
+
+// Which outputs a caller wants back. The names match the response keys, so there
+// is nothing to translate between asking and reading.
+type OutputName = 'png' | 'pngData' | 'html' | 'tsx' | 'moduleCss' | 'css' | 'figmaCss'
+
+// pngData is left out of the default on purpose: it is the same image as `png`
+// but base64 in the body, which is ~40 KB of an agent's context per node. Ask
+// for it when the answer has to stand alone; take the URL otherwise.
+const ALL_OUTPUTS: OutputName[] = ['png', 'html', 'tsx', 'moduleCss', 'css', 'figmaCss']
+const EVERY_OUTPUT: OutputName[] = ['png', 'pngData', 'html', 'tsx', 'moduleCss', 'css', 'figmaCss']
+
+type Extraction = {
+  type: 'extract'
+  id: string
+  name: string
+  nodeType: string
+  width: number
+  height: number
+  layerCount: number
+  truncated: boolean
+  outputs: OutputName[]
+  png?: Uint8Array
+  html?: string
+  css?: string
+  tsx?: string
+  moduleCss?: string
+  figmaCss?: string
+}
+
+type ToUI =
+  | Extraction
+  | { type: 'tree'; page: string; rows: TreeRow[]; truncated: boolean }
+  | { type: 'children'; parentId: string; rows: TreeRow[]; truncated: boolean }
+  | { type: 'selected'; id: string | null; ids: string[]; rows: TreeRow[] }
+  | { type: 'busy' }
+  | { type: 'error'; message: string }
+  | { type: 'res'; id: string; ok: boolean; data?: unknown; error?: string }
+  | { type: 'batch-progress'; index: number; total: number; ref: string; nodeId: string | null; ok: boolean; name?: string; nodeType?: string; layerCount?: number; error?: string }
+  | { type: 'batch-done'; total: number; okCount: number }
+  | { type: 'saved'; folders: FolderCount[]; entries: SavedEntry[] }
+  | { type: 'settings'; url: string; token: string; email: string; profiles: Profile[] }
+
+type FromUI =
+  | { type: 'ready' }
+  | { type: 'expand'; id: string }
+  | { type: 'pick'; id: string; additive?: boolean }
+  | { type: 'capture' }
+  | { type: 'scale'; value: number }
+  | { type: 'scope'; selectionOnly: boolean }
+  | { type: 'instances'; inline: boolean }
+  | { type: 'cancel' }
+  | { type: 'req'; id: string; command: string; params: Record<string, unknown> }
+  | { type: 'batch'; source: 'urls' | 'selection' | 'saved'; text?: string; folder?: string }
+  | { type: 'save-selection'; folder?: string }
+  | { type: 'unsave'; ids: string[] }
+  | { type: 'clear-saved'; folder?: string }
+  | { type: 'create-folder'; name: string }
+  | { type: 'rename-folder'; from: string; to: string }
+  | { type: 'delete-folder'; name: string; deleteEntries?: boolean }
+  | { type: 'move-saved'; ids: string[]; folder: string }
+  | { type: 'refresh-saved' }
+  | { type: 'resize'; width: number; height: number }
+  | { type: 'save-settings'; url: string; token: string; email?: string }
+  | { type: 'sign-out' }
+  | { type: 'open-url'; url: string }
+  | { type: 'forget-relay'; url: string }
+
+type ExtractOptions = {
+  scale: number
+  selectionOnly: boolean
+  inlineInstances: boolean
+  outputs: OutputName[]
+}
+
+/** Defaults, driven by the plugin's own panel; remote callers override per request. */
+const defaults: ExtractOptions = { scale: 2, selectionOnly: false, inlineInstances: false, outputs: ALL_OUTPUTS }
+let capturing = false
+let captureTimer: number | undefined
+
+const DEFAULT_SIZE = { width: 1180, height: 760 }
+const MIN_SIZE = { width: 520, height: 460 }
+const MAX_SIZE = { width: 1800, height: 1200 }
+const SIZE_KEY = `size:${figma.root.id}`
+
+figma.showUI(__html__, { ...DEFAULT_SIZE, themeColors: true })
+
+/** Restores whatever size the user last dragged the window to, per file. */
+async function restoreSize(): Promise<void> {
+  try {
+    const stored = await figma.clientStorage.getAsync(SIZE_KEY)
+    if (stored && typeof stored === 'object') {
+      const { width, height } = stored as { width?: number; height?: number }
+      if (typeof width === 'number' && typeof height === 'number') {
+        figma.ui.resize(
+          Math.min(MAX_SIZE.width, Math.max(MIN_SIZE.width, Math.round(width))),
+          Math.min(MAX_SIZE.height, Math.max(MIN_SIZE.height, Math.round(height))),
+        )
+      }
+    }
+  } catch {
+    // A missing or malformed entry just means the default size.
+  }
+}
+
+async function rememberSize(width: number, height: number): Promise<void> {
+  try {
+    await figma.clientStorage.setAsync(SIZE_KEY, { width: Math.round(width), height: Math.round(height) })
+  } catch {
+    // Losing a window size is not worth surfacing to the user.
+  }
+}
+
+function send(message: ToUI) {
+  figma.ui.postMessage(message)
+}
+
+/** Panel messages have no reply channel, so a refusal surfaces as a status line. */
+function reportFailure(error: unknown): void {
+  send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+}
+
+// ---------------------------------------------------------------- naming
+
+/** Layer names repeat constantly, so every generated name is deduped globally. */
+function uniqueKebab(name: string, taken: Set<string>): string {
+  const base =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'layer'
+  let candidate = base
+  let suffix = 2
+  while (taken.has(candidate)) {
+    candidate = `${base}-${suffix}`
+    suffix++
+  }
+  taken.add(candidate)
+  return candidate
+}
+
+function toCamel(kebab: string): string {
+  const camel = kebab.replace(/-([a-z0-9])/g, (_, char: string) => char.toUpperCase())
+  return /^[0-9]/.test(camel) ? `_${camel}` : camel
+}
+
+function toPascal(name: string): string {
+  const pascal = name
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join('')
+  if (!pascal) return 'Component'
+  return /^[0-9]/.test(pascal) ? `Component${pascal}` : pascal
+}
+
+/** Figma suffixes non-variant property names with "#id"; code does not want that. */
+function propName(figmaName: string): string {
+  const bare = figmaName.split('#')[0]
+  const camel = toCamel(
+    bare
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, ''),
+  )
+  return camel || 'prop'
+}
+
+// ---------------------------------------------------------------- model
+
+type PropValue = { name: string; kind: 'boolean' | 'string' | 'node'; value: string | boolean }
+
+type PropDefinition = {
+  name: string
+  tsType: string
+  defaultValue: string | boolean | undefined
+}
+
+type Layer = {
+  name: string
+  nodeType: string
+  kebab: string
+  camel: string
+  width: number
+  height: number
+  css: [string, string][]
+  characters?: string
+  /** Inline SVG for a layer that is nothing but vectors. See collapseToSvg. */
+  svg?: string
+  isAsset: boolean
+  instanceOf?: string
+  instanceProps: PropValue[]
+  children: Layer[]
+}
+
+type BuildState = {
+  taken: Set<string>
+  count: number
+  truncated: boolean
+  svgCount: number
+  options: ExtractOptions
+}
+
+// ------------------------------------------------------------------ vectors
+//
+// Dev Mode CSS describes a vector with `fill` and `stroke-width`, which are SVG
+// properties: on the <div> the generated markup produces they do nothing, so an
+// icon comes out as an empty box. The fix is to stop pretending it is a box —
+// export the whole icon as one SVG and inline it.
+
+const VECTOR_TYPES = ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'LINE']
+// An icon is a handful of paths; anything larger is a picture, and belongs in
+// the PNG rather than inline in a component.
+const MAX_SVG_LAYERS = 80
+const MAX_SVG_BYTES = 24_000
+
+function paints(value: unknown): boolean {
+  return Array.isArray(value) && value.some((paint) => paint && paint.visible !== false)
+}
+
+/** True when a node draws something of its own that an SVG export would drop. */
+function hasOwnPaint(node: SceneNode): boolean {
+  if ('fills' in node && node.fills !== figma.mixed && paints(node.fills)) return true
+  if ('strokes' in node && paints(node.strokes)) return true
+  if ('effects' in node && paints(node.effects)) return true
+  return false
+}
+
+/**
+ * A node worth collapsing into one SVG: a vector, or a wrapper that contains
+ * nothing but vectors and paints nothing itself. Collapsing at the outermost
+ * such node keeps a two-path icon as one element instead of three nested divs.
+ */
+async function exportSvg(node: SceneNode): Promise<string | null> {
+  try {
+    const svg = await node.exportAsync({ format: 'SVG_STRING' })
+    // Anything this big is a picture, not an icon; the PNG serves it better.
+    return svg.length <= MAX_SVG_BYTES ? svg : null
+  } catch {
+    return null
+  }
+}
+
+function isVectorOnly(node: SceneNode): boolean {
+  if (VECTOR_TYPES.indexOf(node.type) !== -1) return true
+  if (!('children' in node) || node.children.length === 0) return false
+  if (hasOwnPaint(node)) return false
+  return node.children.every((child) => !child.visible || isVectorOnly(child))
+}
+
+async function mainComponentName(node: InstanceNode): Promise<string> {
+  try {
+    const main = await node.getMainComponentAsync()
+    if (!main) return node.name
+    // A variant's own name is "Size=Large"; the set name is the useful one.
+    const parent = main.parent
+    if (parent && parent.type === 'COMPONENT_SET') return parent.name
+    return main.name
+  } catch {
+    return node.name
+  }
+}
+
+function readInstanceProps(node: InstanceNode): PropValue[] {
+  const props: PropValue[] = []
+  try {
+    for (const [key, property] of Object.entries(node.componentProperties)) {
+      if (property.type === 'INSTANCE_SWAP') {
+        props.push({ name: propName(key), kind: 'node', value: String(property.value) })
+      } else if (typeof property.value === 'boolean') {
+        props.push({ name: propName(key), kind: 'boolean', value: property.value })
+      } else {
+        props.push({ name: propName(key), kind: 'string', value: String(property.value) })
+      }
+    }
+  } catch {
+    // Instances from unavailable libraries can throw; props are optional.
+  }
+  return props
+}
+
+async function buildLayer(node: SceneNode, state: BuildState, isRoot: boolean): Promise<Layer | null> {
+  if (state.count >= MAX_LAYERS) {
+    state.truncated = true
+    return null
+  }
+  if (!node.visible) return null
+  state.count++
+
+  const kebab = uniqueKebab(node.name, state.taken)
+  let css: [string, string][] = []
+  try {
+    css = Object.entries(await node.getCSSAsync())
+  } catch {
+    // Some node types report no CSS; an empty rule is better than aborting.
+  }
+
+  const layer: Layer = {
+    name: node.name,
+    nodeType: node.type,
+    width: node.width,
+    height: node.height,
+    kebab,
+    camel: toCamel(kebab),
+    css,
+    isAsset: 'isAsset' in node ? node.isAsset : false,
+    instanceProps: [],
+    children: [],
+  }
+
+  if (node.type === 'TEXT') {
+    layer.characters = node.characters
+  }
+
+  const treatAsComponent = node.type === 'INSTANCE' && !state.options.inlineInstances && !isRoot
+  if (treatAsComponent) {
+    layer.instanceOf = toPascal(await mainComponentName(node))
+    layer.instanceProps = readInstanceProps(node)
+    return layer
+  }
+
+  // An icon collapses into one inline SVG rather than a stack of empty divs, and
+  // the walk stops there: the paths inside are the SVG's business, not the DOM's.
+  // Only when the export works — a failure leaves the old shape rather than a hole.
+  if (!isRoot && state.svgCount < MAX_SVG_LAYERS && isVectorOnly(node)) {
+    const svg = await exportSvg(node)
+    if (svg !== null) {
+      state.svgCount++
+      layer.svg = svg
+      return layer
+    }
+  }
+
+  const descend = !(isRoot && state.options.selectionOnly)
+  if (descend && 'children' in node) {
+    for (const child of node.children) {
+      const built = await buildLayer(child, state, false)
+      if (built) layer.children.push(built)
+    }
+  }
+
+  return layer
+}
+
+/** Variant unions and defaults live on the component set, not the instance. */
+async function rootPropDefinitions(node: SceneNode): Promise<PropDefinition[]> {
+  const definitions: PropDefinition[] = []
+
+  const fromDefinitions = (source: ComponentPropertyDefinitions) => {
+    for (const [key, definition] of Object.entries(source)) {
+      let tsType = 'string'
+      if (definition.type === 'BOOLEAN') tsType = 'boolean'
+      else if (definition.type === 'INSTANCE_SWAP') tsType = 'ReactNode'
+      else if (definition.type === 'VARIANT' && definition.variantOptions?.length) {
+        tsType = definition.variantOptions.map((option) => JSON.stringify(option)).join(' | ')
+      }
+      definitions.push({ name: propName(key), tsType, defaultValue: definition.defaultValue })
+    }
+  }
+
+  try {
+    if (node.type === 'COMPONENT_SET') {
+      fromDefinitions(node.componentPropertyDefinitions)
+      return definitions
+    }
+    if (node.type === 'COMPONENT') {
+      const parent = node.parent
+      if (parent && parent.type === 'COMPONENT_SET') fromDefinitions(parent.componentPropertyDefinitions)
+      else fromDefinitions(node.componentPropertyDefinitions)
+      return definitions
+    }
+    if (node.type === 'INSTANCE') {
+      const main = await node.getMainComponentAsync()
+      const parent = main?.parent
+      if (parent && parent.type === 'COMPONENT_SET') {
+        fromDefinitions(parent.componentPropertyDefinitions)
+      } else if (main) {
+        fromDefinitions(main.componentPropertyDefinitions)
+      }
+      if (definitions.length === 0) {
+        // Fall back to whatever the instance itself reports.
+        for (const prop of readInstanceProps(node)) {
+          definitions.push({
+            name: prop.name,
+            tsType: prop.kind === 'boolean' ? 'boolean' : prop.kind === 'node' ? 'ReactNode' : 'string',
+            defaultValue: typeof prop.value === 'boolean' ? prop.value : String(prop.value),
+          })
+        }
+      }
+      return definitions
+    }
+  } catch {
+    // Remote or detached components: emit a propless component instead.
+  }
+  return definitions
+}
+
+// ---------------------------------------------------------------- renderers
+
+function renderPlainCss(root: Layer): string {
+  const lines: string[] = []
+  const walk = (layer: Layer, depth: number) => {
+    const indent = '  '.repeat(depth)
+    if (layer.css.length > 0) {
+      lines.push(`${indent}/* ${layer.name} — ${layer.nodeType} */`)
+      lines.push(`${indent}.${layer.kebab} {`)
+      for (const [property, value] of layer.css) lines.push(`${indent}  ${property}: ${value};`)
+      lines.push(`${indent}}`)
+      lines.push('')
+    }
+    for (const child of layer.children) walk(child, depth + 1)
+  }
+  walk(root, 0)
+  return lines.join('\n').trim()
+}
+
+function renderModuleCss(root: Layer): string {
+  const lines: string[] = []
+  const walk = (layer: Layer) => {
+    if (layer.css.length > 0) {
+      lines.push(`/* ${layer.name} — ${layer.nodeType} */`)
+      lines.push(`.${layer.camel} {`)
+      for (const [property, value] of layer.css) lines.push(`  ${property}: ${value};`)
+      lines.push('}')
+      lines.push('')
+    }
+    for (const child of layer.children) walk(child)
+  }
+  walk(root)
+  return lines.join('\n').trim()
+}
+
+// -------------------------------------------------------------------- html
+//
+// A page you can open, rather than a fragment to wire up. The class names are
+// the deduped kebab ones, so nothing collides; the text is the real text; icons
+// are inline SVG. Two things the CSS itself never says are added here because
+// without them the page is simply wrong: `position: relative` on any layer with
+// an absolutely positioned child, and the root's own size.
+
+const HTML_ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"]/g, (char) => HTML_ESCAPES[char])
+}
+
+/**
+ * Figma writes `position: absolute` on a child but never `position: relative` on
+ * its parent, so an absolutely positioned layer would otherwise be placed
+ * against the page instead of against the layer it belongs to.
+ */
+function needsPositioning(layer: Layer): boolean {
+  if (layer.css.some(([property, value]) => property === 'position' && value.indexOf('absolute') !== -1)) {
+    return false
+  }
+  return layer.children.some((child) =>
+    child.css.some(([property, value]) => property === 'position' && value.indexOf('absolute') !== -1),
+  )
+}
+
+const GENERIC_FAMILIES = ['sans-serif', 'serif', 'monospace', 'cursive', 'system-ui']
+
+/**
+ * Figma names one font and stops — `font-family: Inter`. Outside Figma that font
+ * is usually not installed, and a list with nothing available falls back to the
+ * browser default, which is a serif. A generic tail fixes the fallback; the
+ * webfont link below fixes the common case of actually having the right face.
+ */
+function withFallback(value: string): string {
+  return GENERIC_FAMILIES.some((generic) => value.indexOf(generic) !== -1)
+    ? value
+    : `${value}, sans-serif`
+}
+
+/** The families and weights the design actually uses, for one webfont request. */
+function fontsUsed(root: Layer): { families: string[]; weights: string[] } {
+  const families: string[] = []
+  const weights: string[] = []
+  const walk = (layer: Layer) => {
+    for (const [property, value] of layer.css) {
+      if (property === 'font-family') {
+        // A token reads `var(--Font, Inter)`; the fallback is the real name.
+        const name = value.replace(/var\([^,]*,\s*/, '').replace(/[)'"]/g, '').split(',')[0].trim()
+        if (name !== '' && GENERIC_FAMILIES.indexOf(name) === -1 && families.indexOf(name) === -1) {
+          families.push(name)
+        }
+      }
+      if (property === 'font-weight' && /^\d{3}$/.test(value) && weights.indexOf(value) === -1) {
+        weights.push(value)
+      }
+    }
+    for (const child of layer.children) walk(child)
+  }
+  walk(root)
+  return { families, weights: weights.sort() }
+}
+
+function fontLink(root: Layer): string {
+  const { families, weights } = fontsUsed(root)
+  if (families.length === 0) return ''
+  const wanted = weights.length > 0 ? weights : ['400']
+  const query = families
+    .map((family) => `family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@${wanted.join(';')}`)
+    .join('&')
+  return `<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?${query}&display=swap" rel="stylesheet">
+`
+}
+
+/** A number as CSS, without a trailing `.00` on the common whole-pixel case. */
+function size(value: number): string {
+  return `${Math.round(value * 100) / 100}px`
+}
+
+function renderHtmlCss(root: Layer, width: number, height: number): string {
+  const lines: string[] = []
+  const walk = (layer: Layer, isRoot: boolean) => {
+    const declarations = layer.css.map(
+      ([property, value]) => `  ${property}: ${property === 'font-family' ? withFallback(value) : value};`,
+    )
+    const declares = (property: string) => layer.css.some(([name]) => name === property)
+    if (needsPositioning(layer)) declarations.push('  position: relative;')
+
+    // A Figma stroke is drawn inside the node's bounds, but Dev Mode CSS leaves
+    // out any size it considers content-derived — so the border lands outside
+    // and the layer grows by twice its width. Pinning the size Figma reports is
+    // what makes border-box mean what Figma meant.
+    if (declares('border') && !isRoot) {
+      if (!declares('height')) declarations.push(`  height: ${size(layer.height)};`)
+      if (!declares('width')) declarations.push(`  width: ${size(layer.width)};`)
+    }
+
+    // Dev Mode CSS leaves the root's own box to its parent, which is not here.
+    if (isRoot) {
+      if (!declares('width')) declarations.push(`  width: ${width}px;`)
+      if (!declares('height')) declarations.push(`  height: ${height}px;`)
+    }
+    if (declarations.length > 0) {
+      lines.push(`/* ${layer.name} — ${layer.nodeType} */`)
+      lines.push(`.${layer.kebab} {`)
+      lines.push(...declarations)
+      lines.push('}')
+      lines.push('')
+    }
+    for (const child of layer.children) walk(child, false)
+  }
+  walk(root, true)
+  return lines.join('\n').trim()
+}
+
+function renderHtmlElement(layer: Layer, depth: number, lines: string[]): void {
+  const pad = '  '.repeat(depth + 3)
+  const attribute = `class="${layer.kebab}"`
+
+  if (layer.svg !== undefined) {
+    lines.push(`${pad}<span ${attribute} aria-hidden="true">${layer.svg}</span>`)
+    return
+  }
+  if (layer.characters !== undefined) {
+    lines.push(`${pad}<span ${attribute}>${escapeHtml(layer.characters)}</span>`)
+    return
+  }
+  if (layer.children.length === 0) {
+    lines.push(`${pad}<div ${attribute}></div>`)
+    return
+  }
+  lines.push(`${pad}<div ${attribute}>`)
+  for (const child of layer.children) renderHtmlElement(child, depth + 1, lines)
+  lines.push(`${pad}</div>`)
+}
+
+function renderHtml(root: Layer, width: number, height: number): string {
+  const body: string[] = []
+  renderHtmlElement(root, -2, body)
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(root.name)}</title>
+${fontLink(root)}<style>
+:root { color-scheme: light; }
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5f6f8;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+/* Figma sizes every layer in pixels, so this is one frame at one width. */
+${renderHtmlCss(root, width, height)}
+</style>
+</head>
+<body>
+${body.join('\n')}
+</body>
+</html>
+`
+}
+
+/** Plain text can sit inline; anything with JSX-significant characters cannot. */
+function jsxText(text: string): string {
+  if (/^[^<>{}\n\r]+$/.test(text) && text.trim() === text) return text
+  return `{${JSON.stringify(text)}}`
+}
+
+function renderPropAttribute(prop: PropValue): string {
+  if (prop.kind === 'boolean') return prop.value === true ? prop.name : `${prop.name}={false}`
+  if (prop.kind === 'node') return `/* ${prop.name}: instance swap */`
+  return `${prop.name}=${JSON.stringify(String(prop.value))}`
+}
+
+function renderElement(layer: Layer, depth: number, lines: string[]): void {
+  const pad = '  '.repeat(depth + 3)
+  const className = `className={s.${layer.camel}}`
+
+  if (layer.instanceOf) {
+    const attributes = [className, ...layer.instanceProps.map(renderPropAttribute)].join(' ')
+    lines.push(`${pad}<${layer.instanceOf} ${attributes} />`)
+    return
+  }
+
+  if (layer.characters !== undefined) {
+    lines.push(`${pad}<span ${className}>${jsxText(layer.characters)}</span>`)
+    return
+  }
+
+  if (layer.svg !== undefined) {
+    // SVG markup is not valid JSX — kebab-case attributes, namespaced xlink —
+    // so it goes in as markup rather than being rewritten into elements.
+    lines.push(
+      `${pad}<span ${className} aria-hidden dangerouslySetInnerHTML={{ __html: ${layer.camel}Svg }} />`,
+    )
+    return
+  }
+
+  if (layer.children.length === 0) {
+    if (layer.isAsset) lines.push(`${pad}<span ${className} aria-hidden />`)
+    else lines.push(`${pad}<div ${className} />`)
+    return
+  }
+
+  lines.push(`${pad}<div ${className}>`)
+  for (const child of layer.children) renderElement(child, depth + 1, lines)
+  lines.push(`${pad}</div>`)
+}
+
+function renderTsx(root: Layer, definitions: PropDefinition[]): string {
+  const componentName = toPascal(root.name)
+
+  const imported = new Set<string>()
+  const collect = (layer: Layer) => {
+    if (layer.instanceOf && layer.instanceOf !== componentName) imported.add(layer.instanceOf)
+    for (const child of layer.children) collect(child)
+  }
+  collect(root)
+
+  const icons: Layer[] = []
+  const collectIcons = (layer: Layer) => {
+    if (layer.svg !== undefined) icons.push(layer)
+    for (const child of layer.children) collectIcons(child)
+  }
+  collectIcons(root)
+
+  const lines: string[] = []
+  const needsReactNode = definitions.some((definition) => definition.tsType === 'ReactNode')
+  if (needsReactNode) lines.push(`import type { ReactNode } from 'react'`)
+  lines.push(`import s from './${componentName}.module.css'`)
+  for (const name of Array.from(imported).sort()) {
+    lines.push(`import { ${name} } from './${name}'`)
+  }
+  lines.push('')
+
+  // Held above the component so the markup stays readable; move them to their
+  // own files if you would rather.
+  for (const icon of icons) {
+    lines.push(`const ${icon.camel}Svg = ${JSON.stringify(icon.svg)}`)
+  }
+  if (icons.length > 0) lines.push('')
+
+  const propsType = `${componentName}Props`
+  let signature = '()'
+  if (definitions.length > 0) {
+    lines.push(`type ${propsType} = {`)
+    for (const definition of definitions) {
+      lines.push(`  ${definition.name}?: ${definition.tsType}`)
+    }
+    lines.push('}')
+    lines.push('')
+
+    const destructured = definitions
+      .map((definition) => {
+        if (definition.defaultValue === undefined) return definition.name
+        const literal =
+          typeof definition.defaultValue === 'boolean'
+            ? String(definition.defaultValue)
+            : JSON.stringify(definition.defaultValue)
+        return `${definition.name} = ${literal}`
+      })
+      .join(', ')
+    signature = `({ ${destructured} }: ${propsType})`
+  }
+
+  lines.push(`export function ${componentName}${signature} {`)
+  lines.push('  return (')
+  renderElement(root, -1, lines)
+  lines.push('  )')
+  lines.push('}')
+
+  if (definitions.length > 0) {
+    lines.push('')
+    lines.push('// Props are declared but not wired to markup yet: Figma reports which')
+    lines.push('// variant is active, not which layers each variant swaps.')
+  }
+
+  return lines.join('\n')
+}
+
+// ---------------------------------------------------------------- tree
+
+function toRow(node: SceneNode): TreeRow {
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    width: Math.round(node.width),
+    height: Math.round(node.height),
+    childCount: 'children' in node ? node.children.length : 0,
+  }
+}
+
+/**
+ * How deep to walk. 1 is the historical behaviour — one level, flat rows — so a
+ * caller that says nothing gets exactly what it always got.
+ */
+function requestedDepth(value: unknown): number {
+  if (value === undefined || value === null || value === '') return 1
+  if (value === 'all' || value === true) return Infinity
+  const depth = Number(value)
+  if (!Number.isFinite(depth) || depth < 1) {
+    throw new Error("depth must be a positive whole number, or 'all'")
+  }
+  return Math.floor(depth)
+}
+
+type Walk = { rows: TreeRow[]; truncated: boolean; nodeCount: number }
+
+/** Infinity does not survive JSON, so 'all' is what an unlimited walk echoes. */
+function depthLabel(depth: number): number | 'all' {
+  return Number.isFinite(depth) ? depth : 'all'
+}
+
+/**
+ * Rows for one level, and their descendants when asked for. `truncated` covers
+ * both limits: too many siblings at a level, and too many nodes overall.
+ */
+function walkTree(nodes: readonly SceneNode[], depth: number): Walk {
+  let budget = MAX_TREE_NODES
+  let truncated = false
+
+  function level(children: readonly SceneNode[], remaining: number): TreeRow[] {
+    const visible = children.filter((node) => node.visible)
+    if (visible.length > MAX_TREE_ROWS) truncated = true
+    const rows: TreeRow[] = []
+    for (const node of visible.slice(0, MAX_TREE_ROWS)) {
+      if (budget <= 0) {
+        truncated = true
+        break
+      }
+      budget--
+      const row = toRow(node)
+      // A row with no `children` key but a childCount above zero is the signal
+      // to ask again with a deeper walk, or from that node.
+      if (remaining > 1 && 'children' in node && node.children.length > 0) {
+        row.children = level(node.children as readonly SceneNode[], remaining - 1)
+      }
+      rows.push(row)
+    }
+    return rows
+  }
+
+  const rows = level(nodes, depth)
+  return { rows, truncated, nodeCount: MAX_TREE_NODES - budget }
+}
+
+function rowsOf(nodes: readonly SceneNode[]): { rows: TreeRow[]; truncated: boolean } {
+  return walkTree(nodes, 1)
+}
+
+function treeData(depth = 1) {
+  const { rows, truncated, nodeCount } = walkTree(figma.currentPage.children, depth)
+  return {
+    page: figma.currentPage.name,
+    pageId: figma.currentPage.id,
+    depth: depthLabel(depth),
+    nodeCount,
+    rows,
+    truncated,
+  }
+}
+
+async function childrenData(id: string, depth = 1) {
+  const node = await figma.getNodeByIdAsync(id)
+  if (!node || !('children' in node)) {
+    return { parentId: id, depth: depthLabel(depth), nodeCount: 0, rows: [] as TreeRow[], truncated: false }
+  }
+  const { rows, truncated, nodeCount } = walkTree(node.children as readonly SceneNode[], depth)
+  return { parentId: id, depth: depthLabel(depth), nodeCount, rows, truncated }
+}
+
+function sendTree(): void {
+  const data = treeData()
+  send({ type: 'tree', page: data.page, rows: data.rows, truncated: data.truncated })
+}
+
+async function sendChildren(id: string): Promise<void> {
+  const data = await childrenData(id)
+  send({ type: 'children', parentId: data.parentId, rows: data.rows, truncated: data.truncated })
+}
+
+// ---------------------------------------------------------------- extraction
+
+/**
+ * The layer walk always runs: it is what `layerCount` and `truncated` describe,
+ * and skipping it would make them a guess. What the outputs save is the work
+ * around it — the PNG render, the second walk `figmaCss` does, and above all the
+ * size of the answer, which is the part an agent pays for.
+ */
+async function buildExtraction(node: SceneNode, options: ExtractOptions): Promise<Extraction> {
+  const wants = (name: OutputName) => options.outputs.indexOf(name) !== -1
+
+  // The same bytes serve both: `png` publishes them as a URL, `pngData` inlines
+  // them. Exporting once covers either.
+  const png = wants('png') || wants('pngData')
+    ? await node.exportAsync({
+        format: 'PNG',
+        constraint: { type: 'SCALE', value: options.scale },
+        useAbsoluteBounds: true,
+      })
+    : undefined
+
+  const state: BuildState = { taken: new Set(), count: 0, truncated: false, svgCount: 0, options }
+  const root = await buildLayer(node, state, true)
+  if (!root) throw new Error('Layer is hidden.')
+
+  const extraction: Extraction = {
+    type: 'extract',
+    id: node.id,
+    name: node.name,
+    nodeType: node.type,
+    width: Math.round(node.width),
+    height: Math.round(node.height),
+    layerCount: state.count,
+    truncated: state.truncated,
+    outputs: options.outputs,
+  }
+
+  if (png) extraction.png = png
+  if (wants('html')) extraction.html = renderHtml(root, Math.round(node.width), Math.round(node.height))
+  if (wants('css')) extraction.css = renderPlainCss(root)
+  if (wants('tsx')) extraction.tsx = renderTsx(root, await rootPropDefinitions(node))
+  if (wants('moduleCss')) extraction.moduleCss = renderModuleCss(root)
+  if (wants('figmaCss')) extraction.figmaCss = await renderFigmaCss(node, options.selectionOnly)
+  return extraction
+}
+
+async function extract(node: SceneNode): Promise<void> {
+  if (capturing) return
+  capturing = true
+  send({ type: 'busy' })
+  try {
+    send(await buildExtraction(node, defaults))
+  } catch (error) {
+    send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+  } finally {
+    capturing = false
+  }
+}
+
+async function extractById(id: string, additive = false): Promise<void> {
+  const node = await figma.getNodeByIdAsync(id)
+  if (!node || node.removed || !('exportAsync' in node)) {
+    send({ type: 'error', message: 'That layer is gone. Refresh the tree.' })
+    return
+  }
+  const scene = node as SceneNode
+
+  if (additive) {
+    // Cmd-click in the tree toggles membership instead of replacing the selection.
+    const current = figma.currentPage.selection
+    const without = current.filter((selected) => selected.id !== scene.id)
+    figma.currentPage.selection = without.length === current.length ? [...current, scene] : without
+    return
+  }
+
+  figma.currentPage.selection = [scene]
+  figma.viewport.scrollAndZoomIntoView([scene])
+  await extract(scene)
+}
+
+function extractSelection(): void {
+  const selection = figma.currentPage.selection
+  send({
+    type: 'selected',
+    id: selection.length > 0 ? selection[0].id : null,
+    ids: selection.map((node) => node.id),
+    rows: selection.slice(0, MAX_BATCH).map(toRow),
+  })
+  // Auto-extracting every node of a multi-selection would be surprising and
+  // slow; the panel offers an explicit "Extract N selected" instead.
+  if (selection.length === 1) void extract(selection[0])
+}
+
+function scheduleSelectionExtract(): void {
+  if (captureTimer !== undefined) clearTimeout(captureTimer)
+  captureTimer = setTimeout(extractSelection, DEBOUNCE_MS)
+}
+
+figma.on('selectionchange', scheduleSelectionExtract)
+figma.on('currentpagechange', () => {
+  sendTree()
+  scheduleSelectionExtract()
+})
+
+// ---------------------------------------------------------------- figma urls
+
+type ParsedUrl = { url: string; fileKey: string; nodeId: string | null }
+
+// Matches every Figma editor URL shape: /file, /design, /proto, /board, /slides.
+const FIGMA_URL = /https?:\/\/(?:[\w-]+\.)?figma\.com\/(?:file|design|proto|board|slides)\/([A-Za-z0-9]+)[^\s]*/g
+
+/** Figma writes node ids with dashes in URLs; the API wants colons. */
+function normalizeNodeId(raw: string): string {
+  return decodeURIComponent(raw).replace(/-/g, ':')
+}
+
+function parseUrl(url: string): ParsedUrl | null {
+  FIGMA_URL.lastIndex = 0
+  const match = FIGMA_URL.exec(url)
+  if (!match) return null
+  const query = match[0].split('?')[1] ?? ''
+  let nodeId: string | null = null
+  for (const pair of query.split('&')) {
+    const [key, value] = pair.split('=')
+    if (key === 'node-id' && value) nodeId = normalizeNodeId(value)
+  }
+  return { url: match[0], fileKey: match[1], nodeId }
+}
+
+/** Pulls every Figma link out of pasted text, in order, without duplicates. */
+function parseUrls(text: string): ParsedUrl[] {
+  const seen = new Set<string>()
+  const parsed: ParsedUrl[] = []
+  FIGMA_URL.lastIndex = 0
+  for (const match of text.match(FIGMA_URL) ?? []) {
+    const entry = parseUrl(match)
+    if (!entry) continue
+    const key = `${entry.fileKey}#${entry.nodeId ?? ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    parsed.push(entry)
+  }
+  return parsed
+}
+
+function pageOf(node: BaseNode): PageNode | null {
+  let current: BaseNode | null = node
+  while (current && current.type !== 'PAGE') current = current.parent
+  return current && current.type === 'PAGE' ? current : null
+}
+
+/**
+ * A plugin can only read the file it runs in, so a URL from another file is a
+ * hard error rather than something to fetch.
+ */
+async function resolveUrl(parsed: ParsedUrl): Promise<SceneNode> {
+  const fileKey = figma.fileKey
+  if (fileKey && fileKey !== parsed.fileKey) {
+    throw new Error(`That link points at file ${parsed.fileKey}; this plugin is running in ${fileKey}. Open that file and run the plugin there.`)
+  }
+  if (!parsed.nodeId) throw new Error('Link has no node-id. Right-click a layer in Figma and choose Copy link to selection.')
+
+  let node = await figma.getNodeByIdAsync(parsed.nodeId)
+  if (!node) {
+    // Under dynamic-page only the open page is loaded; the node may be elsewhere.
+    await figma.loadAllPagesAsync()
+    node = await figma.getNodeByIdAsync(parsed.nodeId)
+  }
+  if (!node || node.removed) {
+    throw new Error(`No node ${parsed.nodeId} in this file${fileKey ? '' : ' (or the link is from another file)'}.`)
+  }
+  if (!('exportAsync' in node)) throw new Error(`Node ${parsed.nodeId} is a ${node.type}, which cannot be exported.`)
+
+  const page = pageOf(node)
+  if (page && page.id !== figma.currentPage.id) await figma.setCurrentPageAsync(page)
+  return node as SceneNode
+}
+
+// ---------------------------------------------------------------- saved set
+
+type FolderCount = { name: string; count: number }
+
+// A folder is a plain label on an entry; '' means the entry sits at the root.
+// One level only — the Saved pane is a narrow list, and a tree in it would cost
+// more to navigate than the grouping saves.
+type SavedEntry = {
+  id: string
+  name: string
+  type: string
+  addedAt: number
+  folder: string
+  missing?: boolean
+}
+
+// Keyed by document so each file keeps its own set. clientStorage is per user
+// and always writable, unlike plugin data on a file the user can only view.
+const STORAGE_KEY = `saved:${figma.root.id}`
+// Relay settings belong to the machine, not the file, so they are not scoped by
+// document id: one relay serves every file this user opens.
+const SETTINGS_KEY = 'relay-settings'
+let saved: SavedEntry[] = []
+// Held separately from the entries so an empty folder survives: you can make one
+// before there is anything to put in it, and emptying one does not delete it.
+let folders: string[] = []
+
+// The email rides along so the panel can name the signed-in account without a
+// round trip on open; it is a label, not a credential.
+type Profile = { url: string; token: string; email?: string }
+
+const MAX_PROFILES = 5
+
+/**
+ * Relays are switched between, not chosen once: a local one for the filesystem
+ * routes and a hosted one for remote agents. Each address remembers its own
+ * token so swapping is one click rather than a re-paste.
+ */
+type Settings = { url: string; token: string; email: string; profiles: Profile[] }
+
+async function readSettings(): Promise<Settings> {
+  try {
+    const stored = await figma.clientStorage.getAsync(SETTINGS_KEY)
+    if (stored && typeof stored === 'object') {
+      const settings = stored as { url?: unknown; token?: unknown; email?: unknown; profiles?: unknown }
+      const url = typeof settings.url === 'string' && settings.url !== '' ? settings.url : DEFAULT_RELAY_URL
+      const token = typeof settings.token === 'string' ? settings.token : ''
+      const email = typeof settings.email === 'string' ? settings.email : ''
+      const profiles = Array.isArray(settings.profiles)
+        ? (settings.profiles as Profile[]).filter(
+            (entry) => entry && typeof entry.url === 'string' && typeof entry.token === 'string',
+          )
+        : []
+      return { url, token, email, profiles }
+    }
+  } catch {
+    // No stored settings means the defaults.
+  }
+  return { url: DEFAULT_RELAY_URL, token: '', email: '', profiles: [] }
+}
+
+async function writeSettings(next: Settings): Promise<void> {
+  try {
+    await figma.clientStorage.setAsync(SETTINGS_KEY, next)
+  } catch (error) {
+    send({
+      type: 'error',
+      message: `Could not save relay settings: ${error instanceof Error ? error.message : String(error)}`,
+    })
+  }
+  send({ type: 'settings', ...next })
+}
+
+async function sendSettings(): Promise<void> {
+  send({ type: 'settings', ...(await readSettings()) })
+}
+
+async function saveSettings(url: string, token: string, email: string): Promise<void> {
+  const previous = await readSettings()
+  const profiles = [{ url, token, email }, ...previous.profiles.filter((entry) => entry.url !== url)].slice(
+    0,
+    MAX_PROFILES,
+  )
+  await writeSettings({ url, token, email, profiles })
+}
+
+/**
+ * Signing out drops the credential and the address keeps its place, so the next
+ * sign-in is one form rather than a reconfiguration.
+ */
+async function signOut(): Promise<void> {
+  const previous = await readSettings()
+  const profiles = previous.profiles.map((entry) =>
+    entry.url === previous.url ? { url: entry.url, token: '', email: '' } : entry,
+  )
+  await writeSettings({ url: previous.url, token: '', email: '', profiles })
+}
+
+async function forgetProfile(url: string): Promise<void> {
+  const previous = await readSettings()
+  const profiles = previous.profiles.filter((entry) => entry.url !== url)
+  await writeSettings({ ...previous, profiles })
+}
+
+async function loadSaved(): Promise<void> {
+  try {
+    const stored = await figma.clientStorage.getAsync(STORAGE_KEY)
+    // Older versions stored a bare array. Reading one is the migration: every
+    // entry lands at the root, and the next write is in the new shape.
+    if (Array.isArray(stored)) {
+      saved = (stored as SavedEntry[]).map((entry) => ({ ...entry, folder: '' }))
+      folders = []
+      return
+    }
+    if (stored && typeof stored === 'object') {
+      const store = stored as { folders?: unknown; entries?: unknown }
+      saved = Array.isArray(store.entries)
+        ? (store.entries as SavedEntry[]).map((entry) => ({
+            ...entry,
+            folder: typeof entry.folder === 'string' ? entry.folder : '',
+          }))
+        : []
+      folders = Array.isArray(store.folders) ? (store.folders as string[]).filter((name) => typeof name === 'string') : []
+      return
+    }
+  } catch {
+    // A missing or malformed entry just means an empty set.
+  }
+  saved = []
+  folders = []
+}
+
+async function persistSaved(): Promise<void> {
+  try {
+    await figma.clientStorage.setAsync(STORAGE_KEY, { folders, entries: saved })
+  } catch (error) {
+    send({ type: 'error', message: `Could not save: ${error instanceof Error ? error.message : String(error)}` })
+  }
+}
+
+// -------------------------------------------------------------- folders
+
+/**
+ * Folder names are matched case-insensitively so "Checkout" and "checkout" cannot
+ * both exist, and a slash is refused because it would read as a path in an API
+ * that has no nesting to offer.
+ */
+function normaliseFolder(name: unknown): string {
+  const text = String(name ?? '').trim().replace(/\s+/g, ' ')
+  if (text === '') return ''
+  if (text.length > MAX_FOLDER_NAME) throw new Error(`Folder names stop at ${MAX_FOLDER_NAME} characters.`)
+  if (text.indexOf('/') !== -1) throw new Error('Folder names cannot contain a slash; folders do not nest.')
+  return text
+}
+
+/** The stored spelling of an existing folder, or '' for the root. */
+function findFolder(name: string): string {
+  if (name === '') return ''
+  const match = folders.find((entry) => entry.toLowerCase() === name.toLowerCase())
+  if (!match) throw new Error(`No folder called ${name}.`)
+  return match
+}
+
+async function createFolder(name: unknown): Promise<string> {
+  const wanted = normaliseFolder(name)
+  if (wanted === '') throw new Error('A folder needs a name.')
+  const existing = folders.find((entry) => entry.toLowerCase() === wanted.toLowerCase())
+  if (existing) return existing
+  if (folders.length >= MAX_FOLDERS) throw new Error(`That is the ${MAX_FOLDERS}th folder; remove one first.`)
+  folders.push(wanted)
+  await persistSaved()
+  return wanted
+}
+
+async function renameFolder(from: unknown, to: unknown): Promise<string> {
+  const current = findFolder(normaliseFolder(from))
+  const wanted = normaliseFolder(to)
+  if (wanted === '') throw new Error('A folder needs a name.')
+  if (current === '') throw new Error('The root is not a folder.')
+  const clash = folders.find((entry) => entry.toLowerCase() === wanted.toLowerCase() && entry !== current)
+  if (clash) throw new Error(`There is already a folder called ${clash}.`)
+  folders = folders.map((entry) => (entry === current ? wanted : entry))
+  saved = saved.map((entry) => (entry.folder === current ? { ...entry, folder: wanted } : entry))
+  await persistSaved()
+  return wanted
+}
+
+/** Deleting a folder keeps its entries by default; they move back to the root. */
+async function deleteFolder(name: unknown, deleteEntries: boolean): Promise<number> {
+  const current = findFolder(normaliseFolder(name))
+  if (current === '') throw new Error('The root is not a folder.')
+  const affected = saved.filter((entry) => entry.folder === current).length
+  folders = folders.filter((entry) => entry !== current)
+  saved = deleteEntries
+    ? saved.filter((entry) => entry.folder !== current)
+    : saved.map((entry) => (entry.folder === current ? { ...entry, folder: '' } : entry))
+  await persistSaved()
+  return affected
+}
+
+async function moveSaved(ids: string[], name: unknown): Promise<number> {
+  const target = findFolder(normaliseFolder(name))
+  const wanted = new Set(ids)
+  let moved = 0
+  saved = saved.map((entry) => {
+    if (!wanted.has(entry.id) || entry.folder === target) return entry
+    moved++
+    return { ...entry, folder: target }
+  })
+  await persistSaved()
+  return moved
+}
+
+/** Every folder with how much is in it, root included, for a caller listing them. */
+function folderCounts(): FolderCount[] {
+  const live = (name: string) => saved.filter((entry) => entry.folder === name && entry.missing !== true).length
+  return [{ name: '', count: live('') }, ...folders.map((name) => ({ name, count: live(name) }))]
+}
+
+/** Layers get deleted or renamed between sessions, so refresh against the file. */
+async function refreshSaved(): Promise<SavedEntry[]> {
+  const refreshed: SavedEntry[] = []
+  for (const entry of saved) {
+    const node = await figma.getNodeByIdAsync(entry.id)
+    if (node && !node.removed && 'exportAsync' in node) {
+      refreshed.push({ ...entry, name: node.name, type: node.type, missing: false })
+    } else {
+      refreshed.push({ ...entry, missing: true })
+    }
+  }
+  saved = refreshed
+  return saved
+}
+
+function sendSaved(): void {
+  send({ type: 'saved', folders: folderCounts(), entries: saved })
+}
+
+/** Saving something already saved moves it rather than refusing or duplicating. */
+async function addSaved(nodes: readonly SceneNode[], folder: unknown = ''): Promise<number> {
+  const target = findFolder(normaliseFolder(folder))
+  const existing = new Map(saved.map((entry) => [entry.id, entry]))
+  let added = 0
+  for (const node of nodes) {
+    const already = existing.get(node.id)
+    if (already) {
+      already.folder = target
+      continue
+    }
+    if (saved.length >= MAX_SAVED) continue
+    const entry: SavedEntry = { id: node.id, name: node.name, type: node.type, addedAt: Date.now(), folder: target }
+    saved.push(entry)
+    existing.set(node.id, entry)
+    added++
+  }
+  await persistSaved()
+  return added
+}
+
+async function removeSaved(ids: string[]): Promise<void> {
+  const drop = new Set(ids)
+  saved = saved.filter((entry) => !drop.has(entry.id))
+  await persistSaved()
+}
+
+/** `folder` undefined means the whole set; '' means only what sits at the root. */
+function savedEntries(folder?: unknown): BatchEntry[] {
+  const scoped = folder === undefined ? undefined : findFolder(normaliseFolder(folder))
+  const live = saved.filter(
+    (entry) => entry.missing !== true && (scoped === undefined || entry.folder === scoped),
+  )
+  if (live.length === 0) {
+    throw new Error(
+      scoped === undefined || scoped === ''
+        ? 'Nothing saved yet. Select layers and press Save selection.'
+        : `Nothing saved in ${scoped}.`,
+    )
+  }
+  return live.map((entry) => ({
+    ref: entry.id,
+    nodeId: entry.id,
+    resolve: () => resolveScene(entry.id),
+  }))
+}
+
+// ---------------------------------------------------------------- batches
+
+type Outcome =
+  | { ref: string; nodeId: string | null; ok: true; extraction: Omit<Extraction, 'type'> }
+  | { ref: string; nodeId: string | null; ok: false; error: string }
+
+type BatchEntry = { ref: string; nodeId: string | null; resolve: () => Promise<SceneNode> }
+
+/**
+ * Runs a batch one node at a time so a single bad entry cannot sink the rest,
+ * and so the panel can show progress while a long batch is still running.
+ */
+async function extractBatch(
+  entries: BatchEntry[],
+  options: ExtractOptions,
+  onResult?: (outcome: Outcome, index: number, total: number) => void,
+): Promise<Outcome[]> {
+  const batch = entries.slice(0, MAX_BATCH)
+  const outcomes: Outcome[] = []
+  for (let index = 0; index < batch.length; index++) {
+    const entry = batch[index]
+    let outcome: Outcome
+    try {
+      const node = await entry.resolve()
+      const { type: _ignored, ...extraction } = await buildExtraction(node, options)
+      outcome = { ref: entry.ref, nodeId: entry.nodeId ?? node.id, ok: true, extraction }
+    } catch (error) {
+      outcome = {
+        ref: entry.ref,
+        nodeId: entry.nodeId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+    outcomes.push(outcome)
+    onResult?.(outcome, index, batch.length)
+  }
+  return outcomes
+}
+
+function urlEntries(text: string): BatchEntry[] {
+  const parsed = parseUrls(text)
+  if (parsed.length === 0) throw new Error('No Figma links found in that text.')
+  return parsed.map((entry) => ({
+    ref: entry.url,
+    nodeId: entry.nodeId,
+    resolve: () => resolveUrl(entry),
+  }))
+}
+
+function idEntries(ids: unknown): BatchEntry[] {
+  const list = Array.isArray(ids) ? ids.map(String).filter((id) => id !== '') : []
+  if (list.length === 0) throw new Error('nodeIds must be a non-empty array of node ids.')
+  return list.map((id) => ({ ref: id, nodeId: id, resolve: () => resolveScene(id) }))
+}
+
+function selectionEntries(): BatchEntry[] {
+  const selection = figma.currentPage.selection
+  if (selection.length === 0) throw new Error('Nothing is selected on canvas.')
+  return selection.map((node) => ({
+    ref: node.id,
+    nodeId: node.id,
+    resolve: async () => node,
+  }))
+}
+
+// ---------------------------------------------------------------- remote API
+
+async function resolveScene(id: unknown): Promise<SceneNode> {
+  if (typeof id === 'string' && id !== '') {
+    const node = await figma.getNodeByIdAsync(id)
+    if (!node || node.removed || !('exportAsync' in node)) throw new Error(`No exportable node with id ${id}`)
+    return node as SceneNode
+  }
+  const selection = figma.currentPage.selection
+  if (selection.length === 0) throw new Error('Pass a nodeId, or select something on canvas')
+  return selection[0]
+}
+
+/**
+ * Which outputs to produce. Absent means all of them, so a caller written before
+ * this existed still gets everything. An unknown name is refused rather than
+ * ignored: silently returning nothing would look like the node was empty.
+ */
+function requestedOutputs(value: unknown): OutputName[] {
+  if (value === undefined || value === null || value === '' || value === 'all') return ALL_OUTPUTS
+  const asked = (Array.isArray(value) ? value : String(value).split(','))
+    .map((name) => String(name).trim())
+    .filter((name) => name !== '')
+  if (asked.length === 0) return ALL_OUTPUTS
+  if (asked.indexOf('all') !== -1) return ALL_OUTPUTS
+
+  const unknown = asked.filter((name) => (EVERY_OUTPUT as string[]).indexOf(name) === -1)
+  if (unknown.length > 0) {
+    throw new Error(`Unknown format ${unknown.join(', ')}. Use one or more of: ${EVERY_OUTPUT.join(', ')}, or all.`)
+  }
+  // Kept in a fixed order so the response keys do not depend on how it was asked.
+  return EVERY_OUTPUT.filter((name) => asked.indexOf(name) !== -1)
+}
+
+function optionsFrom(params: Record<string, unknown>): ExtractOptions {
+  const scale = Number(params.scale)
+  return {
+    scale: Number.isFinite(scale) && scale >= 1 && scale <= 4 ? scale : defaults.scale,
+    selectionOnly: params.topLayerOnly === true,
+    inlineInstances: params.inlineInstances === true,
+    outputs: requestedOutputs(params.format ?? params.formats ?? params.outputs),
+  }
+}
+
+/** Commands the relay can issue. Errors are returned to the caller, not thrown away. */
+async function handleRequest(command: string, params: Record<string, unknown>): Promise<unknown> {
+  switch (command) {
+    case 'get_tree':
+      return treeData(requestedDepth(params.depth))
+    case 'get_children':
+      return childrenData(String(params.id ?? ''), requestedDepth(params.depth))
+    case 'get_selection': {
+      const selection = figma.currentPage.selection
+      return { page: figma.currentPage.name, rows: selection.map(toRow) }
+    }
+    case 'extract_urls': {
+      const text = typeof params.urls === 'string' ? params.urls : Array.isArray(params.urls) ? params.urls.join('\n') : String(params.url ?? '')
+      return { results: await extractBatch(urlEntries(text), optionsFrom(params)) }
+    }
+    case 'extract_nodes':
+      return { results: await extractBatch(idEntries(params.nodeIds), optionsFrom(params)) }
+    case 'extract_selection':
+      return { results: await extractBatch(selectionEntries(), optionsFrom(params)) }
+    case 'extract_saved':
+      await refreshSaved()
+      return { results: await extractBatch(savedEntries(params.folder), optionsFrom(params)) }
+    case 'list_saved': {
+      const entries = await refreshSaved()
+      const scoped = params.folder === undefined ? undefined : findFolder(normaliseFolder(params.folder))
+      return {
+        folders: folderCounts(),
+        entries: scoped === undefined ? entries : entries.filter((entry) => entry.folder === scoped),
+      }
+    }
+    case 'list_folders':
+      await refreshSaved()
+      return { folders: folderCounts() }
+    case 'create_folder': {
+      const name = await createFolder(params.name)
+      sendSaved()
+      return { name, folders: folderCounts() }
+    }
+    case 'rename_folder': {
+      const name = await renameFolder(params.from, params.to)
+      sendSaved()
+      return { name, folders: folderCounts(), entries: saved }
+    }
+    case 'delete_folder': {
+      const affected = await deleteFolder(params.name, params.deleteEntries === true)
+      sendSaved()
+      return { affected, folders: folderCounts(), entries: saved }
+    }
+    case 'move_saved': {
+      const ids = Array.isArray(params.nodeIds) ? (params.nodeIds as string[]).map(String) : []
+      const moved = await moveSaved(ids, params.folder)
+      sendSaved()
+      return { moved, folders: folderCounts(), entries: saved }
+    }
+    case 'save_selection': {
+      const added = await addSaved(figma.currentPage.selection, params.folder)
+      await refreshSaved()
+      sendSaved()
+      return { added, folders: folderCounts(), entries: saved }
+    }
+    case 'save_nodes': {
+      const ids = Array.isArray(params.nodeIds) ? params.nodeIds.map(String) : []
+      const nodes: SceneNode[] = []
+      for (const id of ids) nodes.push(await resolveScene(id))
+      const added = await addSaved(nodes, params.folder)
+      await refreshSaved()
+      sendSaved()
+      return { added, folders: folderCounts(), entries: saved }
+    }
+    case 'unsave': {
+      const ids = Array.isArray(params.nodeIds) ? params.nodeIds.map(String) : []
+      await removeSaved(ids)
+      sendSaved()
+      return { folders: folderCounts(), entries: saved }
+    }
+    case 'clear_saved': {
+      // Clearing one folder empties it without removing the folder itself;
+      // `all` means the whole set, whatever folder was also named.
+      const scoped =
+        params.all === true || params.folder === undefined ? undefined : findFolder(normaliseFolder(params.folder))
+      const doomed = saved.filter((entry) => scoped === undefined || entry.folder === scoped)
+      await removeSaved(doomed.map((entry) => entry.id))
+      sendSaved()
+      return { removed: doomed.length, folders: folderCounts(), entries: saved }
+    }
+    case 'resolve_urls': {
+      const text = typeof params.urls === 'string' ? params.urls : Array.isArray(params.urls) ? params.urls.join('\n') : String(params.url ?? '')
+      const parsed = parseUrls(text)
+      const rows = []
+      for (const entry of parsed.slice(0, MAX_BATCH)) {
+        try {
+          const node = await resolveUrl(entry)
+          rows.push({ url: entry.url, nodeId: entry.nodeId, ok: true, node: toRow(node) })
+        } catch (error) {
+          rows.push({ url: entry.url, nodeId: entry.nodeId, ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      }
+      return { fileKey: figma.fileKey ?? null, rows }
+    }
+    case 'export_png': {
+      // Just the image: no CSS walk, so an image URL can be re-rendered cheaply.
+      const node = await resolveScene(params.nodeId)
+      const scale = Number(params.scale)
+      const png = await node.exportAsync({
+        format: 'PNG',
+        constraint: { type: 'SCALE', value: Number.isFinite(scale) && scale >= 1 && scale <= 4 ? scale : 2 },
+        useAbsoluteBounds: true,
+      })
+      return { png }
+    }
+    case 'extract': {
+      const node = typeof params.url === 'string' && params.url !== ''
+        ? await resolveUrl(parseUrl(params.url) ?? { url: params.url, fileKey: '', nodeId: null })
+        : await resolveScene(params.nodeId)
+      const extraction = await buildExtraction(node, optionsFrom(params))
+      const { type: _ignored, ...rest } = extraction
+      return rest
+    }
+    default:
+      throw new Error(`Unknown command: ${command}`)
+  }
+}
+
+figma.ui.onmessage = (msg: FromUI) => {
+  switch (msg.type) {
+    case 'ready':
+      void restoreSize()
+      void sendSettings()
+      sendTree()
+      scheduleSelectionExtract()
+      loadSaved()
+        .then(refreshSaved)
+        .then(sendSaved)
+      break
+    case 'save-selection':
+      addSaved(figma.currentPage.selection, msg.folder ?? '')
+        .then(refreshSaved)
+        .then(sendSaved)
+        .catch(reportFailure)
+      break
+    case 'create-folder':
+      createFolder(msg.name).then(sendSaved, reportFailure)
+      break
+    case 'rename-folder':
+      renameFolder(msg.from, msg.to).then(sendSaved, reportFailure)
+      break
+    case 'delete-folder':
+      deleteFolder(msg.name, msg.deleteEntries === true).then(sendSaved, reportFailure)
+      break
+    case 'move-saved':
+      moveSaved(msg.ids, msg.folder).then(sendSaved, reportFailure)
+      break
+    case 'unsave':
+      removeSaved(msg.ids).then(sendSaved)
+      break
+    case 'clear-saved': {
+      const scope = msg.folder
+      const doomed = saved.filter((entry) => scope === undefined || entry.folder === scope)
+      removeSaved(doomed.map((entry) => entry.id)).then(sendSaved, reportFailure)
+      break
+    }
+    case 'refresh-saved':
+      refreshSaved().then(sendSaved)
+      break
+    case 'resize':
+      void rememberSize(msg.width, msg.height)
+      break
+    case 'save-settings':
+      void saveSettings(msg.url, msg.token, msg.email ?? '')
+      break
+    case 'sign-out':
+      void signOut()
+      break
+    case 'forget-relay':
+      void forgetProfile(msg.url)
+      break
+    case 'open-url':
+      // A plugin iframe cannot open a tab itself; only the main thread can.
+      if (/^https:\/\//.test(msg.url)) figma.openExternal(msg.url)
+      break
+    case 'expand':
+      void sendChildren(msg.id)
+      break
+    case 'pick':
+      void extractById(msg.id, msg.additive === true)
+      break
+    case 'capture':
+      scheduleSelectionExtract()
+      break
+    case 'scale':
+      defaults.scale = msg.value
+      scheduleSelectionExtract()
+      break
+    case 'scope':
+      defaults.selectionOnly = msg.selectionOnly
+      scheduleSelectionExtract()
+      break
+    case 'instances':
+      defaults.inlineInstances = msg.inline
+      scheduleSelectionExtract()
+      break
+    case 'cancel':
+      figma.closePlugin()
+      break
+    case 'batch': {
+      const options = { ...defaults }
+      let entries: BatchEntry[]
+      try {
+        if (msg.source === 'selection') entries = selectionEntries()
+        else if (msg.source === 'saved') entries = savedEntries(msg.folder)
+        else entries = urlEntries(msg.text ?? '')
+      } catch (error) {
+        send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+        break
+      }
+      extractBatch(entries, options, (outcome, index, total) => {
+        send({
+          type: 'batch-progress',
+          index,
+          total,
+          ref: outcome.ref,
+          nodeId: outcome.nodeId,
+          ok: outcome.ok,
+          name: outcome.ok ? outcome.extraction.name : undefined,
+          nodeType: outcome.ok ? outcome.extraction.nodeType : undefined,
+          layerCount: outcome.ok ? outcome.extraction.layerCount : undefined,
+          error: outcome.ok ? undefined : outcome.error,
+        })
+        // The panel shows the last successful extraction, matching a click.
+        if (outcome.ok) send({ type: 'extract', ...outcome.extraction })
+      }).then(
+        (outcomes) => send({ type: 'batch-done', total: outcomes.length, okCount: outcomes.filter((o) => o.ok).length }),
+        (error: unknown) => send({ type: 'error', message: error instanceof Error ? error.message : String(error) }),
+      )
+      break
+    }
+    case 'req':
+      handleRequest(msg.command, msg.params).then(
+        (data) => send({ type: 'res', id: msg.id, ok: true, data }),
+        (error: unknown) =>
+          send({
+            type: 'res',
+            id: msg.id,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+      )
+      break
+  }
+}

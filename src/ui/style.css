@@ -1,0 +1,1112 @@
+/* Colors come from Figma's theme variables, enabled by themeColors: true in
+   figma.showUI, so the panel follows the editor's light or dark theme. */
+:root {
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* The panes set display: grid, which outranks the UA rule for [hidden]. */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  font: 11px/1.4 Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--figma-color-bg, #fff);
+  color: var(--figma-color-text, #000);
+}
+
+/* ------------------------------------------------------------------ chrome */
+
+.topbar,
+.footbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.topbar {
+  border-bottom: 1px solid var(--figma-color-border, #e6e6e6);
+}
+
+.footbar {
+  border-top: 1px solid var(--figma-color-border, #e6e6e6);
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle,
+.status,
+.placeholder {
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.relay-label {
+  min-width: 92px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------------- body */
+
+/* Three columns: what to extract, what it looks like, what it compiles to. */
+.body {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(200px, 1fr) minmax(320px, 1.5fr);
+  gap: 10px;
+  min-height: 0;
+  padding: 10px 12px;
+}
+
+.side,
+.center,
+.code-column {
+  display: grid;
+  min-height: 0;
+  gap: 8px;
+}
+
+.side {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.center {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+.code-column {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* -------------------------------------------------------------------- docs */
+
+/* Workspace, auth gate and relay page share the middle grid row; one is visible
+   at a time. */
+.body,
+.auth-page,
+.full-page {
+  grid-row: 2;
+}
+
+/* ------------------------------------------------------------------ auth */
+
+/* The gate is the whole window when it shows, so it centres rather than fills. */
+.auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 16px;
+}
+
+.auth-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 340px;
+  padding: 20px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 10px;
+  background: var(--figma-color-bg-secondary, #fafafa);
+}
+
+.auth-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.auth-card .doc-lead {
+  margin: 0;
+  font-size: 11px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 0;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.auth-field > span {
+  color: var(--figma-color-text-secondary, #666);
+}
+
+/* An email and a password are prose, not code, so they skip the mono default. */
+.auth-input {
+  flex: none;
+  padding: 7px 8px;
+  font: 12px/1.4 inherit;
+}
+
+.auth-submit {
+  margin-top: 2px;
+}
+
+.auth-message {
+  margin: 0;
+  min-height: 1.4em;
+}
+
+.auth-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.auth-steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.auth-steps li.done {
+  color: var(--figma-color-text, #000);
+}
+
+.auth-steps li.failed {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+.auth-steps .mark {
+  flex: 0 0 12px;
+  text-align: center;
+}
+
+.auth-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--figma-color-border, #e6e6e6);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 8px;
+  background: var(--figma-color-bg-secondary, #fafafa);
+}
+
+.card.tight {
+  padding: 6px 8px;
+}
+
+.card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-state {
+  font-weight: 600;
+}
+
+.card .doc-code {
+  margin: 0;
+  border: none;
+  background: transparent;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 11px;
+}
+
+.facts dt {
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.facts dd {
+  margin: 0;
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.full-page {
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 12px 24px;
+}
+
+.doc {
+  max-width: 74ch;
+  margin: 0 auto;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.doc h1 {
+  margin: 12px 0 4px;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.doc h2 {
+  margin: 28px 0 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--figma-color-border, #e6e6e6);
+  font-size: 14px;
+}
+
+.doc h3 {
+  margin: 18px 0 4px;
+  font-size: 12px;
+}
+
+.doc-lead {
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 13px;
+}
+
+.doc p,
+.doc ul {
+  margin: 6px 0;
+}
+
+.doc ul {
+  padding-left: 18px;
+}
+
+.doc li {
+  margin: 3px 0;
+}
+
+.doc code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--figma-color-bg-secondary, #f2f2f2);
+  font: 11px/1.4 SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.doc-code {
+  margin: 8px 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 6px;
+  background: var(--figma-color-bg-secondary, #fafafa);
+  font: 11px/1.55 SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+.installer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 8px;
+  background: var(--figma-color-bg-secondary, #fafafa);
+}
+
+.settings-label {
+  flex: 0 0 44px;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.installer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.installer-dirs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 150px;
+  overflow: auto;
+  padding: 2px;
+}
+
+.installer-dir {
+  padding: 3px 8px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 12px;
+  background: var(--figma-color-bg, #fff);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The relay in use is shown but not offered as a destination. */
+.installer-dir.current {
+  border-color: var(--figma-color-border-selected, #0d99ff);
+  background: var(--figma-color-bg-selected, rgba(13, 153, 255, 0.15));
+  cursor: default;
+  font-weight: 600;
+}
+
+.installer-dir .forget {
+  margin-left: 6px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  cursor: pointer;
+}
+
+.installer-dir .forget:hover {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+.installer-dir:hover {
+  border-color: var(--figma-color-border-selected, #0d99ff);
+}
+
+.ok-text {
+  color: var(--figma-color-text-success, #14ae5c);
+}
+
+.bad-text {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+.doc-table {
+  width: 100%;
+  margin: 8px 0;
+  border-collapse: collapse;
+}
+
+.doc-table th,
+.doc-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--figma-color-border, #e6e6e6);
+  text-align: left;
+  vertical-align: top;
+}
+
+.doc-table th {
+  color: var(--figma-color-text-secondary, #666);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.doc-table code {
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ panels */
+
+.pane {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 6px;
+  background: var(--figma-color-bg-secondary, #fff);
+}
+
+.pane.stack {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 6px;
+  padding: 6px;
+  overflow: hidden;
+}
+
+/* Every source pane is a header strip plus a list; only Links adds an input. */
+#selection-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* Count strip, the folder form when open, the chips, then the list. */
+#saved-panel {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+#links-panel {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.grow {
+  flex: 1;
+}
+
+.rows {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ----------------------------------------------------------------- folders */
+
+.folder-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.folder-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  cursor: pointer;
+}
+
+.folder-chip:hover {
+  color: var(--figma-color-text, #000);
+}
+
+.folder-chip.current {
+  border-color: transparent;
+  background: var(--figma-color-bg-brand, #0d99ff);
+  color: var(--figma-color-text-onbrand, #fff);
+  font-weight: 600;
+}
+
+.folder-chip .count {
+  opacity: 0.7;
+  font-size: 9px;
+}
+
+/* Only drawn in the All view, where rows from different folders sit together. */
+.folder-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 4px 2px;
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.folder-heading:first-child {
+  padding-top: 2px;
+}
+
+.row-folder {
+  flex: 0 0 auto;
+  max-width: 84px;
+  padding: 0 2px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 9px;
+}
+
+/* --------------------------------------------------------------- segmented */
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--figma-color-bg-secondary, #f0f0f0);
+}
+
+.seg {
+  flex: 1;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.seg:hover {
+  color: var(--figma-color-text, #000);
+}
+
+.seg.active {
+  background: var(--figma-color-bg, #fff);
+  color: var(--figma-color-text, #000);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+/* ----------------------------------------------------------------- preview */
+
+.preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  min-height: 0;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 6px;
+  background: var(--figma-color-bg-secondary, #f5f5f5);
+  overflow: hidden;
+}
+
+.preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.placeholder {
+  margin: 0;
+  text-align: center;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.field,
+.check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* -------------------------------------------------------------------- tree */
+
+.tree {
+  padding: 2px 0;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 4px;
+  cursor: pointer;
+}
+
+.tree-row:hover {
+  background: var(--figma-color-bg-hover, rgba(0, 0, 0, 0.05));
+}
+
+.tree-row.selected {
+  background: var(--figma-color-bg-selected, rgba(13, 153, 255, 0.15));
+}
+
+.twisty {
+  flex: 0 0 14px;
+  width: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.twisty.empty {
+  visibility: hidden;
+}
+
+.tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-type {
+  flex: 0 0 auto;
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 9px;
+}
+
+/* ------------------------------------------------------------- result rows */
+
+.url-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.url-row:hover {
+  background: var(--figma-color-bg-hover, rgba(0, 0, 0, 0.05));
+}
+
+.url-row.missing {
+  opacity: 0.5;
+}
+
+.url-row .mark {
+  flex: 0 0 10px;
+}
+
+.url-row.idle .mark {
+  color: var(--figma-color-text-tertiary, #b3b3b3);
+}
+
+.url-row.ok .mark {
+  color: var(--figma-color-icon-success, #14ae5c);
+}
+
+.url-row.bad .mark {
+  color: var(--figma-color-icon-danger, #f24822);
+}
+
+.url-row .detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.url-row.bad .detail {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+.url-row .remove {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  cursor: pointer;
+}
+
+.url-row .index {
+  flex: 0 0 auto;
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 9px;
+}
+
+.url-row .remove:hover {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+/* ------------------------------------------------------------------ inputs */
+
+select,
+.text-input {
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 4px;
+  background: var(--figma-color-bg-secondary, #fff);
+  color: inherit;
+  font: inherit;
+}
+
+select {
+  padding: 4px 6px;
+}
+
+.text-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  font: 10px/1.4 SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ------------------------------------------------------------- api browser */
+
+.api {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+}
+
+.api-item {
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 8px;
+  background: var(--figma-color-bg-secondary, #fafafa);
+  overflow: hidden;
+}
+
+.api-group {
+  margin: 14px 0 2px;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.api-group strong {
+  color: var(--figma-color-text, #000);
+}
+
+.api-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.api-head:hover {
+  background: var(--figma-color-bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+/* Fixed width so the paths line up into a column that can be scanned. */
+.api-method {
+  flex: 0 0 46px;
+  padding: 1px 0;
+  border-radius: 3px;
+  color: var(--figma-color-text-onbrand, #fff);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.api-method.get { background: #14ae5c; }
+.api-method.post { background: #0d99ff; }
+.api-method.delete { background: #f24822; }
+
+.api-path {
+  flex: 0 0 auto;
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+}
+
+.api-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.api-lock {
+  flex: 0 0 auto;
+  color: var(--figma-color-text-tertiary, #b3b3b3);
+  font-size: 9px;
+}
+
+.api-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 9px 10px;
+  border-top: 1px solid var(--figma-color-border, #e6e6e6);
+}
+
+.api-label {
+  margin: 4px 0 0;
+  color: var(--figma-color-text-secondary, #666);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 9px;
+}
+
+.api-panel .doc-code {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.api-fields {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 2px 10px;
+  margin: 0;
+  font-size: 10px;
+}
+
+.api-fields code {
+  font-size: 10px;
+}
+
+.api-fields .api-field-note {
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.api-body-input {
+  width: 100%;
+  min-height: 52px;
+  padding: 7px 9px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 6px;
+  background: var(--figma-color-bg, #fff);
+  color: inherit;
+  font: 10px/1.55 SFMono-Regular, Menlo, Consolas, monospace;
+  resize: vertical;
+}
+
+.api-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.api-example {
+  padding: 2px 7px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.api-example:hover {
+  background: var(--figma-color-bg-hover, rgba(0, 0, 0, 0.05));
+}
+
+.try-output {
+  max-height: 260px;
+  padding: 8px 10px;
+  white-space: pre;
+}
+
+/* ----------------------------------------------------------------- editor */
+
+.editor {
+  display: flex;
+  align-items: flex-start;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 6px;
+  background: var(--figma-color-bg-secondary, #fff);
+  font: 10px/1.55 SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 2;
+}
+
+/* Pinned so the numbers survive horizontal scrolling of long lines. */
+.gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: 0 0 auto;
+  padding: 8px 6px;
+  text-align: right;
+  color: var(--figma-color-text-tertiary, #b3b3b3);
+  background: var(--figma-color-bg-secondary, #fff);
+  border-right: 1px solid var(--figma-color-border, #e6e6e6);
+  user-select: none;
+}
+
+.code-view {
+  flex: 1 0 auto;
+  padding: 8px 10px;
+  white-space: pre;
+}
+
+.line,
+.gutter div {
+  min-height: 1.55em;
+}
+
+.pad {
+  padding: 2px 0;
+}
+
+/* GitHub's light and dark token palettes: legible on both Figma themes. */
+.t-comment { color: #6e7781; }
+.t-string { color: #0a3069; }
+.t-keyword,
+.t-atrule { color: #cf222e; }
+.t-tag,
+.t-selector { color: #116329; }
+.t-attr { color: #953800; }
+.t-number,
+.t-prop { color: #0550ae; }
+.t-variable { color: #8250df; }
+
+.figma-dark .t-comment { color: #8b949e; }
+.figma-dark .t-string { color: #a5d6ff; }
+.figma-dark .t-keyword,
+.figma-dark .t-atrule { color: #ff7b72; }
+.figma-dark .t-tag,
+.figma-dark .t-selector { color: #7ee787; }
+.figma-dark .t-attr { color: #ffa657; }
+.figma-dark .t-number,
+.figma-dark .t-prop { color: #79c0ff; }
+.figma-dark .t-variable { color: #d2a8ff; }
+
+/* Fallback for when the host does not tag the document with a theme class. */
+@media (prefers-color-scheme: dark) {
+  html:not(.figma-light) .t-comment { color: #8b949e; }
+  html:not(.figma-light) .t-string { color: #a5d6ff; }
+  html:not(.figma-light) .t-keyword,
+  html:not(.figma-light) .t-atrule { color: #ff7b72; }
+  html:not(.figma-light) .t-tag,
+  html:not(.figma-light) .t-selector { color: #7ee787; }
+  html:not(.figma-light) .t-attr { color: #ffa657; }
+  html:not(.figma-light) .t-number,
+  html:not(.figma-light) .t-prop { color: #79c0ff; }
+  html:not(.figma-light) .t-variable { color: #d2a8ff; }
+}
+
+.text-input:focus,
+select:focus {
+  outline: 1px solid var(--figma-color-border-selected, #0d99ff);
+  border-color: transparent;
+}
+
+/* ----------------------------------------------------------------- buttons */
+
+.button {
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.button.primary {
+  background: var(--figma-color-bg-brand, #0d99ff);
+  color: var(--figma-color-text-onbrand, #fff);
+}
+
+.button.secondary {
+  background: transparent;
+  border-color: var(--figma-color-border, #e6e6e6);
+  color: inherit;
+}
+
+/* Reads as a word, not a glyph, so it needs room the icon buttons do not. */
+.token-action {
+  min-width: 48px;
+  font-size: 11px;
+}
+
+/* Sits beside the icon buttons, so it must match their height, not their width. */
+.topbar-button {
+  min-width: 52px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.button.icon {
+  padding: 4px 8px;
+  background: transparent;
+  border-color: var(--figma-color-border, #e6e6e6);
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* --------------------------------------------------------------------- dot */
+
+.dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--figma-color-icon-secondary, #999);
+}
+
+.dot.open {
+  background: var(--figma-color-icon-success, #14ae5c);
+}
+
+.dot.connecting,
+.dot.retrying {
+  background: var(--figma-color-icon-warning, #ffcd29);
+}
+
+.dot.off {
+  background: var(--figma-color-icon-disabled, #b3b3b3);
+}
+
+/* Narrower windows fold the columns rather than squeezing all three. */
+@media (max-width: 980px) {
+  .body {
+    grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  }
+
+  .side {
+    grid-row: span 2;
+  }
+}
+
+@media (max-width: 620px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 1.2fr);
+  }
+
+  .side {
+    grid-row: auto;
+  }
+}

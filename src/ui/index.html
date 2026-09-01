@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- STYLE -->
+  </head>
+  <body>
+    <header class="topbar" id="topbar" hidden>
+      <div class="meta">
+        <span id="title" class="title">Loading…</span>
+        <span id="subtitle" class="subtitle">Reading the page…</span>
+      </div>
+      <label class="check relay">
+        <input id="relay" type="checkbox" checked />
+        <span>Relay</span>
+      </label>
+      <span id="relay-dot" class="dot off"></span>
+      <span id="relay-status" class="subtitle relay-label">off</span>
+      <button id="refresh" class="button icon" type="button" title="Re-extract">&#8635;</button>
+      <button id="relay-toggle-page" class="button icon topbar-button" type="button">Relay</button>
+    </header>
+
+    <div class="auth-page" id="auth-page">
+      <div class="auth-card">
+        <h1 class="auth-title">Figsnap</h1>
+        <p class="doc-lead" id="auth-lead">
+          Sign in to your relay account. The socket and the HTTP API come up on
+          their own straight after.
+        </p>
+
+        <nav class="segmented auth-tabs" id="auth-tabs">
+          <button class="seg active" type="button" data-auth="login">Sign in</button>
+          <button class="seg" type="button" data-auth="register">Create account</button>
+        </nav>
+
+        <form class="auth-form" id="auth-form" hidden>
+          <label class="auth-field">
+            <span>Email</span>
+            <input class="text-input auth-input" id="auth-email" type="email" required
+              autocomplete="username" spellcheck="false" placeholder="you@example.com" />
+          </label>
+          <label class="auth-field">
+            <span>Password</span>
+            <input class="text-input auth-input" id="auth-password" type="password" required
+              autocomplete="current-password" placeholder="At least 10 characters" />
+          </label>
+          <button class="button primary auth-submit" id="auth-submit" type="submit">Sign in</button>
+          <p class="subtitle auth-message" id="auth-message"></p>
+        </form>
+
+        <ol class="auth-steps" id="auth-steps" hidden></ol>
+
+        <p class="subtitle auth-message" id="auth-boot">Checking your saved session\u2026</p>
+
+        <div class="auth-foot">
+          <span class="subtitle" id="auth-relay"></span>
+          <span class="spacer"></span>
+          <button class="button secondary" type="button" id="auth-local">Use a local relay</button>
+        </div>
+      </div>
+    </div>
+
+    <main class="body" hidden>
+      <aside class="side">
+        <nav class="segmented" id="sources">
+          <button class="seg active" type="button" data-source="tree">Nodes</button>
+          <button class="seg" type="button" data-source="selection">Selection</button>
+          <button class="seg" type="button" data-source="saved">Saved</button>
+          <button class="seg" type="button" data-source="links">Links</button>
+        </nav>
+
+        <div class="pane" id="tree-panel">
+          <div id="tree" class="tree"></div>
+        </div>
+
+        <div class="pane stack" id="selection-panel" hidden>
+          <div class="pane-head">
+            <span id="selection-count" class="subtitle">Nothing selected</span>
+          </div>
+          <div id="selection-list" class="rows"></div>
+        </div>
+
+        <div class="pane stack" id="saved-panel" hidden>
+          <div class="pane-head">
+            <span id="saved-count" class="subtitle">0 saved</span>
+            <span class="spacer"></span>
+            <button id="new-folder" class="button icon" type="button" title="New folder">&#43;</button>
+            <button id="edit-folder" class="button icon" type="button" title="Rename this folder" hidden>&#9998;</button>
+            <button id="clear-saved" class="button icon" type="button" title="Remove all saved" disabled>&#10005;</button>
+          </div>
+          <form class="pane-head" id="folder-form" hidden>
+            <input id="folder-name" class="text-input" type="text" autocomplete="off"
+              spellcheck="false" placeholder="Folder name" />
+            <button id="folder-save" class="button secondary" type="submit">Create</button>
+            <button id="folder-delete" class="button icon" type="button" title="Delete this folder" hidden>&#10005;</button>
+          </form>
+          <div class="folder-chips" id="folder-chips"></div>
+          <div id="saved-list" class="rows"></div>
+        </div>
+
+        <div class="pane stack" id="links-panel" hidden>
+          <form class="pane-head" id="add-link-form">
+            <input
+              id="url-input"
+              class="text-input"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Paste a Figma link, press Enter"
+            />
+            <button id="add-link" class="button secondary" type="submit">Add</button>
+          </form>
+          <div class="pane-head">
+            <span id="link-count" class="subtitle">0 links</span>
+            <span class="spacer"></span>
+            <button id="clear-links" class="button icon" type="button" title="Remove all links" disabled>&#10005;</button>
+          </div>
+          <div id="link-list" class="rows"></div>
+        </div>
+
+        <button id="primary-action" class="button primary" type="button" disabled>Click a layer to extract</button>
+      </aside>
+
+      <section class="center">
+        <div class="preview">
+          <img id="image" alt="" hidden />
+          <p id="placeholder" class="placeholder">Pick a node on the left.</p>
+        </div>
+
+        <div class="controls">
+          <label class="field">
+            <span>Scale</span>
+            <select id="scale">
+              <option value="1">1x</option>
+              <option value="2" selected>2x</option>
+              <option value="3">3x</option>
+              <option value="4">4x</option>
+            </select>
+          </label>
+          <label class="check">
+            <input id="selection-only" type="checkbox" />
+            <span>Top layer only</span>
+          </label>
+          <label class="check">
+            <input id="inline-instances" type="checkbox" />
+            <span>Inline instances</span>
+          </label>
+        </div>
+
+        <button id="save-selection" class="button secondary" type="button" disabled>Save selection</button>
+      </section>
+
+      <section class="code-column">
+        <nav class="segmented" id="code-tabs">
+          <button class="seg active" type="button" data-code="tsx">React</button>
+          <button class="seg" type="button" data-code="html">HTML</button>
+          <button class="seg" type="button" data-code="moduleCss">Module CSS</button>
+          <button class="seg" type="button" data-code="css">CSS</button>
+          <button class="seg" type="button" data-code="figmaCss">Figma CSS</button>
+        </nav>
+
+        <div class="editor" id="editor">
+          <div class="gutter" id="gutter" aria-hidden="true"></div>
+          <div class="code-view" id="code-view"><p class="placeholder pad">Code appears here.</p></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="full-page" id="relay-page" hidden>
+      <article class="doc">
+        <h1>Relay</h1>
+        <p class="doc-lead">
+          The relay is a small process on your machine that holds this plugin's
+          WebSocket open and exposes the same data over HTTP, so an agent or a
+          script can read the design you are looking at.
+        </p>
+
+        <h2>Account</h2>
+        <div class="card" id="account-card">
+          <div class="card-row">
+            <span class="settings-label">Signed in</span>
+            <span class="card-state grow" id="page-account">not signed in</span>
+            <button class="button secondary" type="button" id="page-signout">Sign out</button>
+            <button class="button primary" type="button" id="page-signin">Sign in</button>
+          </div>
+          <p class="subtitle" id="page-account-note" style="margin: 0"></p>
+        </div>
+
+        <h2>Connection</h2>
+        <div class="card" id="relay-card">
+          <div class="card-row">
+            <span class="dot off" id="page-dot"></span>
+            <span class="card-state" id="page-state">off</span>
+            <span class="spacer"></span>
+            <button class="button secondary" type="button" id="page-reconnect">Reconnect</button>
+          </div>
+          <dl class="facts" id="page-facts"></dl>
+        </div>
+
+        <h2>Settings</h2>
+        <p>
+          Stored per user, not in the project, so nothing here is committed and
+          nothing needs recompiling.
+        </p>
+        <div class="card">
+          <div class="card-row">
+            <label class="settings-label" for="page-url">Address</label>
+            <input class="text-input" type="text" id="page-url" spellcheck="false"
+              autocomplete="off" placeholder="ws://localhost:3055/plugin" />
+          </div>
+          <div class="card-row">
+            <span class="settings-label">Relay</span>
+            <div class="installer-dirs" id="page-relays"></div>
+          </div>
+          <div class="card-row">
+            <label class="settings-label" for="page-token">Token</label>
+            <input class="text-input" type="password" id="page-token" spellcheck="false"
+              autocomplete="off" placeholder="none" />
+            <button class="button icon token-action" type="button" id="page-token-show"
+              title="Show the token">Show</button>
+            <button class="button icon" type="button" id="page-token-copy"
+              title="Copy the token">&#10697;</button>
+          </div>
+          <div class="card-row">
+            <span class="settings-label"></span>
+            <span class="subtitle" id="page-token-hint"></span>
+          </div>
+          <div class="card-row">
+            <span class="subtitle" id="page-settings-status"></span>
+            <span class="spacer"></span>
+            <button class="button secondary" type="button" id="page-defaults">Local relay</button>
+            <button class="button primary" type="button" id="page-save">Save and reconnect</button>
+          </div>
+        </div>
+
+        <h2>API</h2>
+        <p>
+          Every endpoint the relay exposes, with the request it expects and the
+          response it returns. <strong>Send</strong> runs the real call against the
+          address in Settings using the token above — the same request an agent
+          would make, so it doubles as the check that the whole chain works.
+        </p>
+        <div class="card tight">
+          <div class="card-row">
+            <label class="settings-label" for="api-node">Node id</label>
+            <input class="text-input" type="text" id="api-node" spellcheck="false"
+              autocomplete="off" placeholder="21:10314" />
+            <span class="subtitle">Fills the <code>:id</code> and <code>:nodeId</code> placeholders. Follows your selection.</span>
+          </div>
+        </div>
+        <div class="api" id="api-list"></div>
+
+        <h2>Claude Code skill</h2>
+        <p>
+          Writes <code>.claude/skills/figsnap/SKILL.md</code> into a project,
+          along with a <code>figsnap-extractor</code> agent that pulls several
+          nodes and reports a summary rather than tens of kilobytes of CSS. The
+          relay address is baked into the files, so they are generated per
+          install rather than copied. An existing install is never overwritten
+          silently — press again to replace it.
+        </p>
+        <p class="subtitle" id="skill-local-only">
+          Writing files needs a filesystem, so this works only against a relay
+          running on your own machine.
+        </p>
+        <div class="installer" id="installer">
+          <div class="installer-bar">
+            <button class="button icon" type="button" id="skill-up" title="Parent directory">&#8593;</button>
+            <input class="text-input" type="text" id="skill-path" spellcheck="false" autocomplete="off" />
+            <button class="button secondary" type="button" id="skill-go">Open</button>
+          </div>
+          <div class="installer-dirs" id="skill-dirs"></div>
+          <div class="installer-bar">
+            <span class="subtitle" id="skill-status">Choose the project to install into.</span>
+            <span class="spacer"></span>
+            <button class="button primary" type="button" id="skill-install">Install here</button>
+          </div>
+        </div>
+
+        <h2>Local or hosted</h2>
+        <p>
+          Running it yourself keeps every byte on this machine and is the only way
+          to get the directory browser and the skill installer, which need a
+          filesystem. A Cloudflare deployment is for when the agent is somewhere
+          else — a cloud session, CI, a teammate — and it requires a token, since
+          there is no <code>127.0.0.1</code> to hide behind on a public address.
+        </p>
+        <p>
+          Either way the relay stores nothing: image URLs re-render through this
+          plugin rather than serving a cached copy, so no part of your design is
+          ever at rest.
+        </p>
+
+        <h2>Running it yourself</h2>
+        <p>Run this in the plugin's project directory and leave it running:</p>
+        <div class="card tight">
+          <div class="card-row">
+            <pre class="doc-code grow" id="page-cmd-plain">npm run relay</pre>
+            <button class="button icon" type="button" data-copy="page-cmd-plain" title="Copy">&#10697;</button>
+          </div>
+        </div>
+        <p>
+          A local relay has no accounts: it binds to <code>127.0.0.1</code>, so
+          anything already on your machine could reach it anyway. Set
+          <code>RELAY_TOKEN</code> if you want one anyway, and paste it into
+          Settings above.
+        </p>
+        <div class="card tight">
+          <div class="card-row">
+            <pre class="doc-code grow" id="page-cmd-token">RELAY_TOKEN=$(openssl rand -hex 16) npm run relay</pre>
+            <button class="button icon" type="button" data-copy="page-cmd-token" title="Copy">&#10697;</button>
+          </div>
+        </div>
+        <p>
+          <code>RELAY_PORT</code> changes the port. Figma blocks any address the
+          manifest does not list, so a different port also means editing
+          <code>networkAccess.devAllowedDomains</code> in
+          <code>manifest.json</code> and re-importing the plugin — Figma caches
+          the manifest.
+        </p>
+
+        <h2>Checking it from a terminal</h2>
+        <div class="card tight">
+          <div class="card-row">
+            <pre class="doc-code grow" id="page-cmd-health">curl -s http://localhost:3055/health</pre>
+            <button class="button icon" type="button" data-copy="page-cmd-health" title="Copy">&#10697;</button>
+          </div>
+        </div>
+
+        <h2>Hosting it on Cloudflare</h2>
+        <p>
+          Deploy once, from the plugin's project directory:
+        </p>
+        <div class="card tight">
+          <div class="card-row">
+            <pre class="doc-code grow" id="page-cmd-deploy">npx wrangler login
+npm run worker:deploy</pre>
+            <button class="button icon" type="button" data-copy="page-cmd-deploy" title="Copy">&#10697;</button>
+          </div>
+        </div>
+        <p>
+          A hosted relay has accounts, and signing in happens in this panel:
+          <strong>Sign in</strong> at the top of this page asks for an email and a
+          password, stores the token it gets back, and brings the socket and the
+          HTTP API up without another click. The same form is what the plugin
+          opens with when no session is stored.
+        </p>
+        <p>
+          The password is sent to your own relay over HTTPS and is never stored
+          here — only the token it returns is, per user rather than in the
+          project. The relay also serves <code>/login</code> as an ordinary web
+          page if you would rather type the password into a browser, where a
+          password manager can fill it.
+        </p>
+        <p>
+          <strong>Each account gets its own room.</strong> A token reaches the
+          designs of the plugin signed in with that same account and nobody
+          else's, so several designers can share one relay without colliding.
+          Passwords are stored as a chained PBKDF2 hash, tokens only as a SHA-256
+          hash, and signing in again issues a fresh token while older ones keep
+          working until revoked.
+        </p>
+        <p>
+          A newly deployed address must be added to
+          <code>networkAccess.devAllowedDomains</code> in
+          <code>manifest.json</code> — the exact host, not a
+          <code>*.workers.dev</code> wildcard, which would let this plugin reach
+          every Worker on the internet — followed by a re-import. The address
+          offered above is already listed.
+        </p>
+        <p>
+          Two routes stay local-only on a hosted relay and answer <code>501</code>:
+          browsing directories and installing the Claude Code skill, both of which
+          need a filesystem.
+        </p>
+
+        <p>
+          The relay serves the whole manual over HTTP at <code>/docs</code>, and
+          as Markdown at <code>/docs.md</code> for pasting into an agent.
+        </p>
+      </article>
+    </div>
+
+    <footer class="footbar" id="footbar" hidden>
+      <p id="status" class="status"></p>
+      <button id="copy-image" class="button secondary" type="button" disabled>Copy PNG</button>
+      <button id="download" class="button secondary" type="button" disabled>Download PNG</button>
+      <button id="copy-code" class="button primary" type="button" disabled>Copy TSX</button>
+    </footer>
+    <!-- SCRIPT -->
+  </body>
+</html>
