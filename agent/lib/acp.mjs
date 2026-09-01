@@ -374,7 +374,14 @@ export function createRunner({ plugin, log, emit, mcpServers, sessions, allowEdi
 
     const command = process.platform === 'win32' && next.command === 'npx' ? 'npx.cmd' : next.command
     log(`launching ${next.name}: ${command} ${next.args.join(' ')}`)
-    const spawned = spawn(command, next.args, { cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] })
+    // A registry row may carry its own environment — an alternative endpoint and
+    // its key — read now rather than at import, so a variable exported after the
+    // daemon started still counts.
+    const spawned = spawn(command, next.args, {
+      cwd,
+      env: { ...process.env, ...(next.env?.() ?? {}) },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
     child = spawned
 
     // Compared by identity, not against null: a harness being replaced exits
