@@ -23,6 +23,11 @@ const dom = new JSDOM(html, {
   beforeParse(window) {
     window.fetch = async () => { throw new Error('offline') }
     window.WebSocket = class { constructor() { this.readyState = 0 } addEventListener() {} close() {} send() {} }
+    // jsdom implements no object URLs; a browser does, and the panel needs them
+    // to show image bytes without a round trip.
+    let issued = 0
+    window.URL.createObjectURL = () => `blob:figsnap/${++issued}`
+    window.URL.revokeObjectURL = () => {}
   },
 })
 const { window } = dom
@@ -83,6 +88,56 @@ await settle()
 check('the strip names what you picked', id('title').textContent === 'Checkout Sheet')
 check('with its type and size', id('subtitle').textContent === 'FRAME · 375×420')
 
+// ------------------------------------------------------- saving from the strip
+
+check('the strip offers Save once something is selected',
+  id('mini-save').disabled === false && id('mini-save').textContent === 'Save')
+
+posted.length = 0
+id('mini-save').click()
+await settle()
+check('the strip saves without restoring',
+  posted.find((message) => message.type === 'save-selection') !== undefined)
+check('and saving does not restore the panel by accident',
+  window.document.body.classList.contains('mini'))
+
+// A save has no list to watch change from in here, so the message is the receipt.
+send({ type: 'save-result', added: 1, already: 0, moved: 0, full: 0, folder: '' })
+await settle()
+check('a save is confirmed', id('toast').hidden === false && id('toast').textContent === 'Saved 1')
+check('and the confirmation is the green one', id('toast').className === 'toast')
+
+// The same layer twice is not a duplicate and not a dead button: it says so.
+send({ type: 'save-result', added: 0, already: 1, moved: 0, full: 0, folder: '' })
+await settle()
+check('saving the same layer again says it is already saved',
+  id('toast').textContent === 'Already saved' && id('toast').className === 'toast warn')
+
+send({ type: 'save-result', added: 2, already: 0, moved: 0, full: 0, folder: 'Checkout' })
+await settle()
+check('and it names the folder it went to', id('toast').textContent === 'Saved 2 to Checkout')
+
+send({ type: 'save-result', added: 0, already: 0, moved: 0, full: 3, folder: '' })
+await settle()
+check('a full set is an error, not a shrug',
+  id('toast').textContent.includes('full') && id('toast').className === 'toast bad')
+
+// --------------------------------------------------------------- thumbnail
+
+check('no thumbnail until one arrives', id('mini-thumb').hidden === true)
+// A one-pixel PNG is enough: what matters is that bytes become a visible image.
+send({ type: 'thumb', id: '9:9', png: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]) })
+await settle()
+check('a thumbnail of the selection appears in the strip',
+  id('mini-thumb').hidden === false && id('mini-thumb').src.startsWith('blob:'))
+const firstThumb = id('mini-thumb').src
+send({ type: 'thumb', id: '9:8', png: new Uint8Array([137, 80, 78, 71, 1, 2, 3, 4]) })
+await settle()
+check('picking something else replaces it', id('mini-thumb').src !== firstThumb)
+send({ type: 'thumb', id: null, png: null })
+await settle()
+check('and selecting nothing clears it', id('mini-thumb').hidden === true)
+
 // A window resize while minimised is the plugin's own doing, and must not be
 // stored as the size the user chose.
 posted.length = 0
@@ -100,6 +155,8 @@ check('restoring tells the main thread to grow again',
   posted.find((message) => message.type === 'minimise')?.on === false)
 check('the workspace comes back', !window.document.body.classList.contains('mini'))
 check('and the button is a minimise again', id('minimise').textContent === '–')
+check('the strip thumbnail is dropped, the real preview takes over',
+  id('mini-thumb').hidden === true)
 
 // The strip is a bigger target than the button, and has nothing else on it.
 id('minimise').click()

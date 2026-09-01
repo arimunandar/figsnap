@@ -61,10 +61,18 @@ primary button underneath:
 
 | Tab | List | Primary button |
 | --- | --- | --- |
-| **Nodes** | the page tree, expandable | none — clicking a row extracts it |
+| **Nodes** | the page tree, three levels open already | none — clicking a row extracts it |
 | **Selection** | what is selected on canvas | `Extract N selected` |
 | **Saved** | the set you curated, optionally in folders | `Extract N saved` |
 | **Links** | links you queued one by one | `Extract N links` |
+
+The Nodes tree arrives with three levels already walked, so finding a frame
+inside a group takes no clicking; anything deeper still expands on demand. Long
+names are not truncated — the pane scrolls sideways instead, because a deep tree
+of similarly named layers is unreadable clipped.
+
+Each saved row carries a button that copies its node id, which is what an API
+call needs and is otherwise nowhere on screen.
 
 There is exactly one primary button, always in the same place, and its label says
 what it will do. Clicking any single row extracts that one node immediately; the
@@ -82,14 +90,23 @@ and the **Relay** page, which holds the account, the connection, the settings,
 the API browser and the Claude Code skill installer. Escape returns to the
 workspace. The manual itself lives on the relay, at `/docs`.
 
-**–** in the top bar minimises the panel to a 340×40 strip, so the canvas is
-clear while you go and find a layer. The socket stays up and selection keeps
-arriving: the strip names whatever you click, with its type and size, so you can
-line a selection up and then restore. Clicking anywhere on the strip restores it.
-While minimised the automatic preview is skipped — there is nowhere to show it,
-and clicking around the canvas is the point — and the shrunken window is not
-stored as the size you chose, so restoring returns to whatever you had dragged
-it to.
+**–** in the top bar minimises the panel to a 400px-wide strip, so the canvas is
+clear while you go and find a layer. It keeps working down there:
+
+- The strip names whatever you click, with its type and size.
+- A preview of the selection sits below it, at the **full width of the panel**,
+  and the window's height follows the component's aspect ratio — a tall frame
+  gets a tall window, a wide one a short window, rather than being letterboxed
+  in a fixed box. Nothing selected means the strip alone.
+- **Save** puts the selection straight into the saved set without restoring,
+  and says what happened: `Saved 1`, `Saved 2 to Checkout`, or `Already saved`
+  when the layer is in the set already. An id is never stored twice.
+- The relay socket stays up, so `/extract` and `/events` work throughout.
+
+Clicking anywhere on the strip restores it. The full 2× preview and the CSS walk
+are skipped while minimised — clicking around the canvas is the point, so only a
+cheap fitted thumbnail is exported — and the shrunken window is not stored as
+the size you chose, so restoring returns to whatever you had dragged it to.
 
 Right: the generated output in a read-only editor with line numbers and syntax
 highlighting — five tabs:

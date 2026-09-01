@@ -14,12 +14,19 @@
         <input id="relay" type="checkbox" checked />
         <span>Relay</span>
       </label>
+      <span id="toast" class="toast" hidden></span>
       <span id="relay-dot" class="dot off"></span>
       <span id="relay-status" class="subtitle relay-label">off</span>
       <button id="refresh" class="button icon" type="button" title="Re-extract">&#8635;</button>
+      <button id="mini-save" class="button primary mini-only" type="button" title="Save the selection" disabled>Save</button>
       <button id="minimise" class="button icon" type="button" title="Minimise — clears the canvas so you can select">&#8211;</button>
       <button id="relay-toggle-page" class="button icon topbar-button" type="button">Relay</button>
     </header>
+
+    <div class="mini-preview" id="mini-preview">
+      <img id="mini-thumb" alt="" hidden />
+      <p id="mini-placeholder" class="placeholder">Pick a layer on the canvas.</p>
+    </div>
 
     <div class="auth-page" id="auth-page">
       <div class="auth-card">

@@ -25,6 +25,8 @@ const dom = new JSDOM(html, {
   beforeParse(window) {
     // Nothing here talks to a relay; a socket that never opens is fine.
     window.fetch = async () => { throw new Error('offline') }
+    window.URL.createObjectURL = () => 'blob:figsnap/1'
+    window.URL.revokeObjectURL = () => {}
     window.WebSocket = class {
       constructor() { this.readyState = 0 }
       addEventListener() {}
@@ -71,7 +73,10 @@ await settle()
 const chips = () => [...id('folder-chips').querySelectorAll('.folder-chip')]
 check('a chip per folder, plus All', chips().length === 4, chips().map((c) => c.textContent).join(' | '))
 check('All is the opening scope', chips()[0].classList.contains('current') && chips()[0].textContent.startsWith('All'))
-check('chips carry counts', chips().some((chip) => chip.textContent.replace(/\s+/g, ' ') === 'Checkout 2'))
+// Asserted on the parts, not on the joined text: how they are spaced is layout.
+const checkoutChip = chips().find((chip) => chip.textContent.startsWith('Checkout'))
+check('chips carry counts', checkoutChip?.querySelector('.count')?.textContent === '2',
+  checkoutChip?.textContent)
 check('the root chip is named, not blank', chips().some((chip) => chip.textContent.startsWith('No folder')))
 
 // --------------------------------------------------------------- grouping
@@ -134,6 +139,17 @@ select.dispatchEvent(new window.Event('change', { bubbles: true }))
 await settle()
 const move = posted.find((message) => message.type === 'move-saved')
 check('moving posts the entry and its destination', move?.folder === '' && move?.ids.length === 1)
+
+// The node id is what an API call needs and it is nowhere on screen, so each row
+// offers it. jsdom has no clipboard, so the failure path is what is observable.
+const row = id('saved-list').querySelector('.url-row')
+const copy = row.querySelector('.copy')
+check('each saved row offers its node id', copy !== null && copy.title === 'Copy the node id')
+copy.click()
+await settle()
+check('and copying reports the id either way',
+  id('toast').hidden === false && id('toast').textContent.includes('1:1'),
+  id('toast').textContent)
 
 // ------------------------------------------------------------ folder form
 

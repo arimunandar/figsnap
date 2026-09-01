@@ -12,6 +12,10 @@ const MAX_TREE_ROWS = 300
 // than a caller wants back in a single response, and an unbounded walk of a real
 // design file is measured in tens of thousands of vectors.
 const MAX_TREE_NODES = 2000
+// The panel opens with the tree already walked this deep, so the common case —
+// find a frame inside a group — needs no clicking. Deeper than this a page is
+// mostly vectors, and anything still collapsed expands on demand as before.
+const AUTO_TREE_DEPTH = 3
 const DEBOUNCE_MS = 250
 
 type TreeRow = {
@@ -64,6 +68,8 @@ type ToUI =
   | { type: 'batch-progress'; index: number; total: number; ref: string; nodeId: string | null; ok: boolean; name?: string; nodeType?: string; layerCount?: number; error?: string }
   | { type: 'batch-done'; total: number; okCount: number }
   | { type: 'saved'; folders: FolderCount[]; entries: SavedEntry[] }
+  | { type: 'save-result'; added: number; already: number; moved: number; full: number; folder: string }
+  | { type: 'thumb'; id: string | null; png: Uint8Array | null }
   | { type: 'settings'; url: string; token: string; email: string; profiles: Profile[] }
 
 type FromUI =
@@ -109,7 +115,26 @@ let minimised = false
 const DEFAULT_SIZE = { width: 1180, height: 760 }
 // Minimised is a strip of header, not a small window: it deliberately sits below
 // MIN_SIZE so the canvas is clear while the plugin keeps running.
-const MINI_SIZE = { width: 340, height: 40 }
+// Minimised, the window is a strip of header plus a preview that fits whatever
+// is selected — a fixed height letterboxes a tall frame and wastes canvas on a
+// wide one. Only the height moves; a width that jumped about would be worse.
+const MINI_WIDTH = 400
+const MINI_STRIP = 44
+const MINI_PREVIEW_PADDING = 12
+const MINI_PREVIEW_MIN = 80
+const MINI_PREVIEW_MAX = 460
+
+/** The preview's own height for a node, before the strip is added. */
+function miniPreviewHeight(node: SceneNode): number {
+  if (node.width <= 0 || node.height <= 0) return MINI_PREVIEW_MIN
+  const inner = MINI_WIDTH - 16
+  const scaled = Math.round(inner * (node.height / node.width))
+  return Math.min(MINI_PREVIEW_MAX, Math.max(MINI_PREVIEW_MIN, scaled))
+}
+
+function resizeMini(previewHeight: number): void {
+  figma.ui.resize(MINI_WIDTH, MINI_STRIP + (previewHeight > 0 ? previewHeight + MINI_PREVIEW_PADDING : 0))
+}
 const MIN_SIZE = { width: 520, height: 460 }
 const MAX_SIZE = { width: 1800, height: 1200 }
 const SIZE_KEY = `size:${figma.root.id}`
@@ -854,7 +879,7 @@ async function childrenData(id: string, depth = 1) {
 }
 
 function sendTree(): void {
-  const data = treeData()
+  const data = treeData(AUTO_TREE_DEPTH)
   send({ type: 'tree', page: data.page, rows: data.rows, truncated: data.truncated })
 }
 
@@ -952,11 +977,42 @@ function extractSelection(): void {
     rows: selection.slice(0, MAX_BATCH).map(toRow),
   })
   // Auto-extracting every node of a multi-selection would be surprising and
-  // slow; the panel offers an explicit "Extract N selected" instead. Minimised
-  // there is nowhere to show a preview either, and clicking around the canvas is
-  // the whole point of being minimised — so the export is skipped and only the
-  // selection itself is reported.
-  if (selection.length === 1 && !minimised) void extract(selection[0])
+  // slow; the panel offers an explicit "Extract N selected" instead.
+  if (selection.length !== 1) {
+    if (minimised) {
+      // Nothing to preview, so the window is the strip and nothing else.
+      send({ type: 'thumb', id: null, png: null })
+      resizeMini(0)
+    }
+    return
+  }
+  // Minimised there is no room for the full preview, and clicking around the
+  // canvas is the whole point — so the CSS walk and the 2x export are skipped in
+  // favour of one small thumbnail.
+  if (minimised) void sendThumb(selection[0])
+  else void extract(selection[0])
+}
+
+async function sendThumb(node: SceneNode): Promise<void> {
+  const previewHeight = miniPreviewHeight(node)
+  resizeMini(previewHeight)
+  // Twice the box it will be shown in, so it stays sharp on a retina screen
+  // without exporting anything like the full 2x image the open panel uses.
+  const box = { width: MINI_WIDTH * 2, height: previewHeight * 2 }
+  try {
+    // Whichever side would overflow decides the constraint, so a tall thin frame
+    // does not export as a several-thousand-pixel image.
+    const wide = node.width / node.height > box.width / box.height
+    const png = await node.exportAsync({
+      format: 'PNG',
+      constraint: wide ? { type: 'WIDTH', value: box.width } : { type: 'HEIGHT', value: box.height },
+      useAbsoluteBounds: true,
+    })
+    send({ type: 'thumb', id: node.id, png })
+  } catch {
+    // A layer that cannot be exported simply shows no thumbnail.
+    send({ type: 'thumb', id: node.id, png: null })
+  }
 }
 
 function scheduleSelectionExtract(): void {
@@ -1282,25 +1338,39 @@ function sendSaved(): void {
   send({ type: 'saved', folders: folderCounts(), entries: saved })
 }
 
-/** Saving something already saved moves it rather than refusing or duplicating. */
-async function addSaved(nodes: readonly SceneNode[], folder: unknown = ''): Promise<number> {
+type SaveResult = { added: number; already: number; moved: number; full: number }
+
+/**
+ * Saving something already saved moves it rather than refusing or duplicating —
+ * an id appears at most once in the set. The counts come back so the panel can
+ * say which of those happened instead of looking like it did nothing.
+ */
+async function addSaved(nodes: readonly SceneNode[], folder: unknown = ''): Promise<SaveResult> {
   const target = findFolder(normaliseFolder(folder))
   const existing = new Map(saved.map((entry) => [entry.id, entry]))
-  let added = 0
+  const result: SaveResult = { added: 0, already: 0, moved: 0, full: 0 }
+
   for (const node of nodes) {
     const already = existing.get(node.id)
     if (already) {
-      already.folder = target
+      if (already.folder === target) result.already++
+      else {
+        already.folder = target
+        result.moved++
+      }
       continue
     }
-    if (saved.length >= MAX_SAVED) continue
+    if (saved.length >= MAX_SAVED) {
+      result.full++
+      continue
+    }
     const entry: SavedEntry = { id: node.id, name: node.name, type: node.type, addedAt: Date.now(), folder: target }
     saved.push(entry)
     existing.set(node.id, entry)
-    added++
+    result.added++
   }
   await persistSaved()
-  return added
+  return result
 }
 
 async function removeSaved(ids: string[]): Promise<void> {
@@ -1494,19 +1564,19 @@ async function handleRequest(command: string, params: Record<string, unknown>): 
       return { moved, folders: folderCounts(), entries: saved }
     }
     case 'save_selection': {
-      const added = await addSaved(figma.currentPage.selection, params.folder)
+      const result = await addSaved(figma.currentPage.selection, params.folder)
       await refreshSaved()
       sendSaved()
-      return { added, folders: folderCounts(), entries: saved }
+      return { ...result, folders: folderCounts(), entries: saved }
     }
     case 'save_nodes': {
       const ids = Array.isArray(params.nodeIds) ? params.nodeIds.map(String) : []
       const nodes: SceneNode[] = []
       for (const id of ids) nodes.push(await resolveScene(id))
-      const added = await addSaved(nodes, params.folder)
+      const result = await addSaved(nodes, params.folder)
       await refreshSaved()
       sendSaved()
-      return { added, folders: folderCounts(), entries: saved }
+      return { ...result, folders: folderCounts(), entries: saved }
     }
     case 'unsave': {
       const ids = Array.isArray(params.nodeIds) ? params.nodeIds.map(String) : []
@@ -1575,8 +1645,11 @@ figma.ui.onmessage = (msg: FromUI) => {
       break
     case 'save-selection':
       addSaved(figma.currentPage.selection, msg.folder ?? '')
-        .then(refreshSaved)
-        .then(sendSaved)
+        .then(async (result) => {
+          await refreshSaved()
+          sendSaved()
+          send({ type: 'save-result', ...result, folder: msg.folder ?? '' })
+        })
         .catch(reportFailure)
       break
     case 'create-folder':
@@ -1609,7 +1682,9 @@ figma.ui.onmessage = (msg: FromUI) => {
     case 'minimise':
       minimised = msg.on
       if (msg.on) {
-        figma.ui.resize(MINI_SIZE.width, MINI_SIZE.height)
+        // The strip first; the preview and its height follow from the selection.
+        resizeMini(0)
+        scheduleSelectionExtract()
       } else {
         // Back to whatever size the user had dragged it to, not the default,
         // and with a preview of whatever they picked while it was out of the way.

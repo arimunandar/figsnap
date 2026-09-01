@@ -34,6 +34,9 @@ type TreeRow = {
   childCount: number
 }
 
+/** A row as the main thread sends it: nested where the walk went deeper. */
+type IncomingRow = TreeRow & { children?: IncomingRow[] }
+
 type Extraction = {
   type: 'extract'
   id: string
@@ -79,8 +82,10 @@ type FromPlugin =
   | BatchProgress
   | { type: 'batch-done'; total: number; okCount: number }
   | { type: 'saved'; folders: FolderCount[]; entries: SavedEntry[] }
-  | { type: 'tree'; page: string; rows: TreeRow[]; truncated: boolean }
-  | { type: 'children'; parentId: string; rows: TreeRow[]; truncated: boolean }
+  | { type: 'save-result'; added: number; already: number; moved: number; full: number; folder: string }
+  | { type: 'thumb'; id: string | null; png: Uint8Array | null }
+  | { type: 'tree'; page: string; rows: IncomingRow[]; truncated: boolean }
+  | { type: 'children'; parentId: string; rows: IncomingRow[]; truncated: boolean }
   | { type: 'busy' }
   | { type: 'error'; message: string }
 
@@ -118,6 +123,10 @@ const selectionOnly = document.getElementById('selection-only') as HTMLInputElem
 const inlineInstances = document.getElementById('inline-instances') as HTMLInputElement
 const refreshButton = document.getElementById('refresh') as HTMLButtonElement
 const minimiseButton = document.getElementById('minimise') as HTMLButtonElement
+const miniSaveButton = document.getElementById('mini-save') as HTMLButtonElement
+const toastLine = document.getElementById('toast') as HTMLSpanElement
+const miniThumb = document.getElementById('mini-thumb') as HTMLImageElement
+const miniPlaceholder = document.getElementById('mini-placeholder') as HTMLParagraphElement
 const copyImageButton = document.getElementById('copy-image') as HTMLButtonElement
 const downloadButton = document.getElementById('download') as HTMLButtonElement
 const copyCodeButton = document.getElementById('copy-code') as HTMLButtonElement
@@ -247,11 +256,63 @@ function setStatus(text: string) {
   status.textContent = text
 }
 
+// --------------------------------------------------------------------- toast
+//
+// Saving from the strip has no list to watch change, so the confirmation has to
+// be the message itself — including the case where nothing changed because the
+// layer was already saved, which otherwise looks like a dead button.
+
+const TOAST_MS = 2600
+let toastTimer: number | undefined
+
+function toast(text: string, tone: 'good' | 'warn' | 'bad' = 'good') {
+  toastLine.textContent = text
+  toastLine.className = tone === 'good' ? 'toast' : `toast ${tone}`
+  toastLine.hidden = false
+  document.body.classList.add('toasting')
+  if (toastTimer !== undefined) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toastLine.hidden = true
+    document.body.classList.remove('toasting')
+  }, TOAST_MS)
+}
+
+/** Says what actually happened, so a second press is not a mystery. */
+function saveMessage(result: { added: number; already: number; moved: number; full: number; folder: string }) {
+  const where = result.folder === '' ? '' : ` to ${result.folder}`
+  if (result.full > 0 && result.added === 0) {
+    return { text: `Saved set is full at ${MAX_SAVED_ENTRIES}`, tone: 'bad' as const }
+  }
+  if (result.added > 0) {
+    return { text: `Saved ${result.added}${where}`, tone: 'good' as const }
+  }
+  if (result.moved > 0) {
+    return { text: `Moved ${result.moved}${where}`, tone: 'good' as const }
+  }
+  if (result.already > 0) {
+    return {
+      text: result.already === 1 ? 'Already saved' : `All ${result.already} already saved`,
+      tone: 'warn' as const,
+    }
+  }
+  return { text: 'Nothing selected', tone: 'warn' as const }
+}
+
 // ------------------------------------------------------------------ tree
 
-function toTreeNodes(rows: TreeRow[], depth: number): TreeNode[] {
+/**
+ * Rows the walk already descended into arrive nested, and open as they are.
+ * Anything still flat keeps the old behaviour: a twisty that fetches on click.
+ */
+function toTreeNodes(rows: IncomingRow[], depth: number): TreeNode[] {
   return rows.map((row) => {
-    const node: TreeNode = { ...row, depth, expanded: false, children: null }
+    const { children, ...rest } = row
+    const node: TreeNode = {
+      ...rest,
+      depth,
+      expanded: children !== undefined,
+      children: children === undefined ? null : toTreeNodes(children, depth + 1),
+    }
     byId.set(node.id, node)
     return node
   })
@@ -552,6 +613,7 @@ type RowSpec = {
   onOpen?: () => void
   onRemove?: () => void
   onMove?: (folder: string) => void
+  onCopyId?: () => void
 }
 
 function buildRow(spec: RowSpec): HTMLDivElement {
@@ -591,6 +653,19 @@ function buildRow(spec: RowSpec): HTMLDivElement {
     move.addEventListener('click', (event) => event.stopPropagation())
     move.addEventListener('change', () => spec.onMove?.(move.value))
     row.appendChild(move)
+  }
+
+  if (spec.onCopyId) {
+    const copy = document.createElement('button')
+    copy.type = 'button'
+    copy.className = 'copy'
+    copy.title = 'Copy the node id'
+    copy.textContent = '\u29c9'
+    copy.addEventListener('click', (event) => {
+      event.stopPropagation()
+      void spec.onCopyId?.()
+    })
+    row.appendChild(copy)
   }
 
   if (spec.onRemove) {
@@ -684,7 +759,6 @@ function renderFolderChips() {
         ? savedEntries.filter((entry) => entry.missing !== true).length
         : (savedFolders.find((folder) => folder.name === scope)?.count ?? 0),
     )
-    chip.appendChild(document.createTextNode(' '))
     chip.appendChild(count)
 
     chip.addEventListener('click', () => {
@@ -743,6 +817,13 @@ function renderSaved() {
         onOpen: entry.missing === true ? undefined : () => post({ type: 'pick', id: entry.id }),
         onRemove: () => post({ type: 'unsave', ids: [entry.id] }),
         onMove: (folder: string) => post({ type: 'move-saved', ids: [entry.id], folder }),
+        // The id is what an API call needs, and it is nowhere on screen — the
+        // toast doubles as a way to read it.
+        onCopyId: async () => {
+          const copied = await copyText(entry.id)
+          if (copied) toast(`${entry.id} copied`)
+          else toast(`Copy blocked — the id is ${entry.id}`, 'bad')
+        },
       }
     }),
     savedFolder === null || savedFolder === ''
@@ -858,6 +939,8 @@ function refreshPrimary() {
   primaryAction.disabled = activeSource === 'tree' || count === 0
 
   saveSelectionButton.disabled = selectedIds.length === 0
+  miniSaveButton.disabled = selectedIds.length === 0
+  miniSaveButton.textContent = selectedIds.length > 1 ? `Save ${selectedIds.length}` : 'Save'
   const into = savedFolder === null || savedFolder === '' ? '' : ` to ${savedFolder}`
   saveSelectionButton.textContent =
     (selectedIds.length > 1 ? `Save ${selectedIds.length} selected` : 'Save selection') + into
@@ -910,18 +993,49 @@ let view: View = 'auth'
 // the socket stays up, the selection keeps arriving, and the name of whatever
 // you click shows in the bar, so you can line up a selection and then restore.
 
+// Mirrors MAX_SAVED in the main thread; only used to word the "set is full"
+// message, which is why it is not worth a round trip.
+const MAX_SAVED_ENTRIES = 100
+
 let minimised = false
+// Its own object URL, revoked as it is replaced: one per canvas click otherwise
+// leaks for as long as the panel is open.
+let thumbUrl: string | null = null
+
+function showThumb(png: Uint8Array | null) {
+  if (thumbUrl) URL.revokeObjectURL(thumbUrl)
+  thumbUrl = null
+  if (!png) {
+    miniThumb.hidden = true
+    miniThumb.removeAttribute('src')
+    miniPlaceholder.hidden = false
+    return
+  }
+  thumbUrl = URL.createObjectURL(new Blob([new Uint8Array(png)], { type: 'image/png' }))
+  miniThumb.src = thumbUrl
+  miniThumb.hidden = false
+  miniPlaceholder.hidden = true
+}
 
 function setMinimised(on: boolean) {
   if (minimised === on) return
   minimised = on
   document.body.classList.toggle('mini', on)
   minimiseButton.textContent = on ? '\u2922' : '\u2013'
+  // The picture belongs to the strip; restoring shows the real preview instead.
+  if (!on) showThumb(null)
   minimiseButton.title = on ? 'Restore the panel' : 'Minimise — clears the canvas so you can select'
   post({ type: 'minimise', on })
 }
 
 minimiseButton.addEventListener('click', () => setMinimised(!minimised))
+
+// The strip's own save: the reason to minimise is to go and pick something, so
+// keeping it means not having to restore just to save what you found.
+miniSaveButton.addEventListener('click', (event) => {
+  event.stopPropagation()
+  post({ type: 'save-selection', folder: savedFolder ?? '' })
+})
 
 function setView(next: View) {
   view = next
@@ -949,7 +1063,8 @@ relayPageToggle.addEventListener('click', () => setView(view === 'relay' ? 'work
 // than one 24px button, and there is nothing else on it to click.
 topbar.addEventListener('click', (event) => {
   if (!minimised) return
-  if ((event.target as HTMLElement).closest('#minimise')) return
+  const target = event.target as HTMLElement
+  if (target.closest('#minimise') || target.closest('#mini-save')) return
   setMinimised(false)
 })
 
@@ -2110,6 +2225,15 @@ window.addEventListener('message', (event: MessageEvent) => {
         refreshApi()
       }
       if (view === 'auth') refreshAuthPage()
+      break
+    }
+    case 'thumb':
+      showThumb(msg.png)
+      break
+    case 'save-result': {
+      const said = saveMessage(msg)
+      toast(said.text, said.tone)
+      setStatus(said.text)
       break
     }
     case 'saved':

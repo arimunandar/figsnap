@@ -119,12 +119,46 @@ body {
   grid-row: 2;
 }
 
+/* ------------------------------------------------------------------ toast */
+
+/* Lives in the top bar because that is the one strip visible in both sizes —
+   a floating pill would have nowhere to go in a 40px-tall window. */
+.toast {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--figma-color-bg-success-tertiary, #cff7d3);
+  color: var(--figma-color-text-success, #0d6a35);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toast.warn {
+  background: var(--figma-color-bg-warning-tertiary, #ffefc9);
+  color: var(--figma-color-text-warning, #7a5300);
+}
+
+.toast.bad {
+  background: var(--figma-color-bg-danger-tertiary, #ffd6d1);
+  color: var(--figma-color-text-danger, #b3261e);
+}
+
+/* Only shown when the panel is a strip; in the full panel the same job is done
+   by the Save selection button beside the preview. */
+.mini-only {
+  display: none;
+}
+
 /* -------------------------------------------------------------- minimised */
 
 /* A strip of header and nothing else: the canvas is the point of minimising,
    so everything that would cover it is gone rather than merely small. */
+/* The strip, then the preview under it. */
 body.mini {
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -135,10 +169,11 @@ body.mini .auth-page {
   display: none !important;
 }
 
+/* Keeps the full panel's padding and its divider: the strip needs the breathing
+   room more than the panel does, and the line is what separates it from the
+   preview underneath. */
 body.mini .topbar {
   grid-row: 1;
-  padding: 0 8px;
-  border-bottom: none;
 }
 
 /* The selection name and the connection light are the two things still worth
@@ -153,6 +188,40 @@ body.mini #relay-toggle-page {
 
 body.mini .title {
   font-size: 11px;
+}
+
+body.mini .mini-only {
+  display: inline-block;
+  padding: 3px 10px;
+}
+
+/* The preview gets the whole width below the strip: a thumbnail squeezed in
+   beside the name was too small to tell two frames apart. */
+.mini-preview {
+  display: none;
+}
+
+body.mini .mini-preview {
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 4px 8px 8px;
+  overflow: hidden;
+}
+
+.mini-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+/* 340px does not hold both a layer name and a message, and the message is the
+   one that just happened. */
+body.mini.toasting .title {
+  display: none;
 }
 
 /* ------------------------------------------------------------------ auth */
@@ -541,13 +610,19 @@ body.mini .title {
   gap: 3px;
 }
 
+/* Laid out rather than spaced with a text node: the label and the count are
+   different sizes, so only a flex gap keeps every chip padded the same. */
 .folder-chip {
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
   border: 1px solid var(--figma-color-border, #e6e6e6);
   border-radius: 999px;
   background: transparent;
   color: var(--figma-color-text-secondary, #666);
   font: inherit;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -562,9 +637,16 @@ body.mini .title {
   font-weight: 600;
 }
 
+/* Tabular figures so a chip does not shuffle sideways as its count changes. */
 .folder-chip .count {
-  opacity: 0.7;
   font-size: 9px;
+  line-height: 1;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.folder-chip.current .count {
+  opacity: 0.85;
 }
 
 /* Only drawn in the All view, where rows from different folders sit together. */
@@ -668,8 +750,11 @@ body.mini .title {
 
 /* -------------------------------------------------------------------- tree */
 
+/* Wide enough for the longest name at its indent, so the pane scrolls sideways
+   rather than truncating — a deep tree of similar names is unreadable clipped. */
 .tree {
   padding: 2px 0;
+  min-width: max-content;
 }
 
 .tree-row {
@@ -677,6 +762,10 @@ body.mini .title {
   align-items: center;
   gap: 4px;
   padding: 3px 6px 3px 4px;
+  width: max-content;
+  /* So the hover and selection bands still span the full pane, not just the
+     text, when the widest row is narrower than the pane. */
+  min-width: 100%;
   cursor: pointer;
 }
 
@@ -705,17 +794,19 @@ body.mini .title {
 }
 
 .tree-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
+/* Pushed to the right edge of the row, which is the pane's width or the widest
+   row, whichever is greater. */
 .tree-type {
   flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 16px;
   color: var(--figma-color-text-secondary, #666);
   font-size: 9px;
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------- result rows */
@@ -763,6 +854,21 @@ body.mini .title {
 
 .url-row.bad .detail {
   color: var(--figma-color-text-danger, #f24822);
+}
+
+.url-row .copy {
+  flex: 0 0 auto;
+  padding: 0 3px;
+  border: none;
+  background: transparent;
+  color: var(--figma-color-text-tertiary, #b3b3b3);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.url-row .copy:hover {
+  color: var(--figma-color-text, #000);
 }
 
 .url-row .remove {

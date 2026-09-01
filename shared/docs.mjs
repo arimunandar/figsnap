@@ -119,12 +119,12 @@ export function docsSections({ httpBase, relayState, nodeId, surface = 'http' })
         {
           type: 'p',
           text:
-            'It keeps running while it is down there. The relay socket stays connected, selection changes still reach an agent over `/events`, and the strip names whatever you click with its type and size — so you can line a selection up and then restore. Clicking anywhere on the strip brings it back, to whatever size you had dragged it to rather than the default.',
+            'It keeps running while it is down there. The relay socket stays connected, selection changes still reach an agent over `/events`, and the strip names whatever you click with its type and size. Below it sits a preview at the full width of the panel, and the window height follows the component’s aspect ratio rather than letterboxing it in a fixed box. **Save** adds the selection to the saved set without restoring, and says whether it saved, moved, or was already there — an id is never stored twice. Clicking anywhere on the strip brings the panel back, to whatever size you had dragged it to.',
         },
         {
           type: 'p',
           text:
-            'The automatic preview is skipped while minimised: there is nowhere to show it, and clicking around the canvas is the whole point. An `/extract` over HTTP still works exactly as before.',
+            'The full 2x preview and the CSS walk are skipped while minimised — clicking around the canvas is the whole point, so only a small fitted thumbnail is exported. An `/extract` over HTTP still works exactly as before.',
         },
       ],
     },
