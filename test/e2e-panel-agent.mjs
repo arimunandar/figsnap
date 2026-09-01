@@ -197,6 +197,45 @@ check('the tool list is shown so the designer can see what was handed over',
   id('agent-tools').textContent.includes('figma_extract') &&
   id('agent-tools').textContent.includes('edits the file'))
 
+// The empty state is the launcher: what will happen, the button, and the
+// conversations that could be picked up instead of starting a new one.
+push({
+  kind: 'sessions',
+  sessions: Array.from({ length: 7 }, (unused, index) => ({
+    id: `past-${index}`,
+    harness: 'claude',
+    harnessName: 'Claude Code',
+    cwd: '/Users/designer/work',
+    file: 'Bonds',
+    title: `an earlier question ${index}`,
+    updatedAt: Date.now() - index * 60_000,
+  })),
+})
+await settle()
+const idleRows = () => [...id('agent-idle-list').querySelectorAll('.history-row')]
+check('the empty state offers the recent conversations', idleRows().length === 5, String(idleRows().length))
+check('five of them, not all seven', id('agent-idle-recent').hidden === false)
+check('and says what pressing Start will do',
+  id('agent-idle-title').textContent === 'Claude Code is ready' &&
+  id('agent-idle-lead').textContent.includes('work'),
+  `${id('agent-idle-title').textContent} / ${id('agent-idle-lead').textContent}`)
+check('with Start in the middle rather than the strip',
+  id('agent-idle').contains(id('agent-start')))
+
+received.length = 0
+idleRows()[1].querySelector('.history-open').click()
+await settle()
+check('and one of them can be opened from there',
+  sawFrame('start')?.resume === 'past-1', JSON.stringify(sawFrame('start')))
+
+push({ kind: 'sessions', sessions: [] })
+await settle()
+check('with nothing to pick up, nothing is offered', id('agent-idle-recent').hidden === true)
+
+// Opening one above moved the folder; put it back for what follows.
+push({ kind: 'state', harness: null, sessionId: null, cwd: '/Users/designer', running: false, writes: false, auto: true, connected: true })
+await settle()
+
 // Back to the workspace: the session is started from the column, not the page.
 window.dispatchEvent(Object.assign(new window.Event('keydown'), { key: 'Escape' }))
 await settle()

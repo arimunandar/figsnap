@@ -1586,6 +1586,38 @@ select:focus {
   color: var(--figma-color-text-secondary, #666);
 }
 
+.idle-start {
+  margin-top: 4px;
+  padding: 6px 18px;
+}
+
+/* The recent list is the second offer, so it is separated from the first by a
+   rule rather than by more space — space alone reads as an unrelated block. */
+.idle-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-width: 340px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--figma-color-border, #e6e6e6);
+}
+
+.idle-recent-head {
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.idle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
 .welcome-cards {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1852,9 +1884,12 @@ select:focus {
   border-style: dashed;
 }
 
-.context-chip .drop {
-  padding: 0 2px;
+/* One dismiss affordance, wherever something can be taken off a list. */
+.drop {
+  flex: none;
+  padding: 0 3px;
   border: none;
+  border-radius: 4px;
   background: transparent;
   color: var(--figma-color-text-secondary, #666);
   font: inherit;
@@ -1862,7 +1897,8 @@ select:focus {
   cursor: pointer;
 }
 
-.context-chip .drop:hover {
+.drop:hover {
+  background: var(--figma-color-bg-hover, rgba(0, 0, 0, 0.06));
   color: var(--figma-color-text-danger, #f24822);
 }
 

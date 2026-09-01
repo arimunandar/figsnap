@@ -197,6 +197,10 @@ const agentFolderList = document.getElementById('agent-folder-list') as HTMLDivE
 const agentFolderUp = document.getElementById('agent-folder-up') as HTMLButtonElement
 const agentFolderUse = document.getElementById('agent-folder-use') as HTMLButtonElement
 const agentIdle = document.getElementById('agent-idle') as HTMLDivElement
+const agentIdleTitle = document.getElementById('agent-idle-title') as HTMLHeadingElement
+const agentIdleLead = document.getElementById('agent-idle-lead') as HTMLParagraphElement
+const agentIdleRecent = document.getElementById('agent-idle-recent') as HTMLDivElement
+const agentIdleList = document.getElementById('agent-idle-list') as HTMLDivElement
 const agentSetupLink = document.getElementById('agent-setup-link') as HTMLButtonElement
 const agentMore = document.getElementById('agent-more') as HTMLButtonElement
 const agentMoreMenu = document.getElementById('agent-more-menu') as HTMLDivElement
@@ -2807,6 +2811,7 @@ function handleAgentFrame(message: Record<string, unknown>) {
     case 'sessions':
       agentSessions = (message.sessions as AgentSessionRecord[]) ?? []
       if (!agentHistoryMenu.hidden) renderHistory()
+      if (!agentIdle.hidden) renderAgentIdle()
       break
 
     case 'harnesses':
@@ -3014,6 +3019,37 @@ function shortDirectory(path: string): string {
   return parts.length === 0 ? path : parts[parts.length - 1]
 }
 
+/**
+ * The panel with no session running: what will happen when you press the
+ * button, the button, and the conversations you could pick up instead.
+ *
+ * It names the missing step rather than inviting you to start something that
+ * would refuse — a harness that is not picked, a folder that is not chosen, a
+ * daemon that is not running are three different problems with three answers.
+ */
+const RECENT = 5
+
+function renderAgentIdle() {
+  const blocked =
+    agentStatus !== 'open'
+      ? 'Run npm run agent in the plugin’s project, then pair it under Setup.'
+      : agentHarnessId === ''
+        ? 'Pick a harness under Setup.'
+        : agentCwd === ''
+          ? 'Choose a project folder — the name at the top of this column opens the picker.'
+          : null
+
+  const name = agentHarnesses.find((harness) => harness.id === agentHarnessId)?.name ?? agentHarnessId
+  agentIdleTitle.textContent = blocked === null ? `${name} is ready` : 'Not ready yet'
+  agentIdleLead.textContent =
+    blocked ?? `It will work in ${shortDirectory(agentCwd)}, and can see whatever you have selected.`
+
+  const recent = agentSessions.slice(0, RECENT)
+  agentIdleRecent.hidden = recent.length === 0
+  agentIdleList.textContent = ''
+  for (const record of recent) agentIdleList.appendChild(historyRow(record))
+}
+
 function refreshAgentStrip() {
   const live = agentSession.sessionId !== null
   agentSessionLabel.textContent = live
@@ -3031,19 +3067,7 @@ function refreshAgentStrip() {
       ? `${agentCwd === '' ? 'No project folder yet' : agentCwd} — click to change`
       : 'Connect the daemon first'
   agentIdle.hidden = live || agentLog.childElementCount > 0
-  const line = agentIdle.querySelector('.agent-empty-line') as HTMLParagraphElement | null
-  if (line !== null) {
-    // Naming the missing thing, rather than a generic invitation to start
-    // something that would refuse.
-    line.textContent =
-      agentStatus !== 'open'
-        ? 'Run npm run agent in the plugin’s project, then pair it under Setup.'
-        : agentHarnessId === ''
-          ? 'Pick a harness under Setup, then choose a project folder.'
-          : agentCwd === ''
-            ? 'Choose a project folder — the name at the top of this column opens the picker.'
-            : `Start a session to talk about this file, working in ${shortDirectory(agentCwd)}.`
-  }
+  if (!agentIdle.hidden) renderAgentIdle()
 }
 
 /**
@@ -3222,6 +3246,71 @@ function ago(at: number): string {
   return days === 1 ? 'yesterday' : `${days}d ago`
 }
 
+/** One conversation, as a row. The history menu and the empty state share it. */
+function historyRow(record: AgentSessionRecord): HTMLDivElement {
+  // A conversation is only reopenable while the harness that owns it is still
+  // installed. Saying so on the row beats failing on the click.
+  const harness = agentHarnesses.find((entry) => entry.id === record.harness)
+  const reachable = harness !== undefined && harness.available
+
+  const row = document.createElement('div')
+  row.className = `history-row${record.id === agentSession.sessionId ? ' current' : ''}${reachable ? '' : ' gone'}`
+
+  const open = document.createElement('button')
+  open.type = 'button'
+  open.className = 'history-open'
+  open.disabled = !reachable
+
+  const title = document.createElement('span')
+  title.className = 'title'
+  title.textContent = record.title ?? 'Untitled'
+
+  const about = document.createElement('span')
+  about.className = 'about'
+  about.textContent = [
+    reachable ? record.harnessName : `${record.harnessName} is not installed`,
+    shortDirectory(record.cwd),
+    record.file ?? null,
+    ago(record.updatedAt),
+  ]
+    .filter((part) => part !== null && part !== '')
+    .join(' · ')
+
+  open.append(title, about)
+  open.title = reachable
+    ? `${record.title ?? 'Untitled'}\n${record.cwd}`
+    : `${record.harnessName} is not on this machine any more, so this conversation cannot be reopened. Remove it with the cross.`
+  open.addEventListener('click', () => {
+    closeMenus()
+    if (record.id === agentSession.sessionId) return
+    agentHarnessId = record.harness
+    agentCwd = record.cwd
+    agentSessionId = record.id
+    saveAgentSettings()
+    agentLog.textContent = ''
+    agentBridge.send({
+      kind: 'start',
+      harness: record.harness,
+      cwd: record.cwd,
+      resume: record.id,
+      file: currentFileName,
+    })
+  })
+
+  const drop = document.createElement('button')
+  drop.type = 'button'
+  drop.className = 'drop'
+  drop.textContent = '✕'
+  drop.title = 'Forget this conversation'
+  drop.addEventListener('click', (event: Event) => {
+    event.stopPropagation()
+    agentBridge.send({ kind: 'forget', id: record.id })
+  })
+
+  row.append(open, drop)
+  return row
+}
+
 function renderHistory() {
   agentHistoryMenu.textContent = ''
   if (agentSessions.length === 0) {
@@ -3232,69 +3321,7 @@ function renderHistory() {
     agentHistoryMenu.appendChild(empty)
     return
   }
-
-  for (const record of agentSessions) {
-    // A conversation is only reopenable while the harness that owns it is still
-    // installed. Saying so on the row beats failing on the click.
-    const harness = agentHarnesses.find((entry) => entry.id === record.harness)
-    const reachable = harness !== undefined && harness.available
-
-    const row = document.createElement('div')
-    row.className = `history-row${record.id === agentSession.sessionId ? ' current' : ''}${
-      reachable ? '' : ' gone'
-    }`
-
-    const open = document.createElement('button')
-    open.type = 'button'
-    open.className = 'history-open'
-    open.disabled = !reachable
-    const title = document.createElement('span')
-    title.className = 'title'
-    title.textContent = record.title ?? 'Untitled'
-    const about = document.createElement('span')
-    about.className = 'about'
-    about.textContent = [
-      reachable ? record.harnessName : `${record.harnessName} is not installed`,
-      shortDirectory(record.cwd),
-      record.file ?? null,
-      ago(record.updatedAt),
-    ]
-      .filter((part) => part !== null && part !== '')
-      .join(' · ')
-    open.append(title, about)
-    open.title = reachable
-      ? `${record.title ?? 'Untitled'}\n${record.cwd}`
-      : `${record.harnessName} is not on this machine any more, so this conversation cannot be reopened. Remove it with the cross.`
-    open.addEventListener('click', () => {
-      closeMenus()
-      if (record.id === agentSession.sessionId) return
-      agentHarnessId = record.harness
-      agentCwd = record.cwd
-      agentSessionId = record.id
-      saveAgentSettings()
-      agentLog.textContent = ''
-      agentBridge.send({
-        kind: 'start',
-        harness: record.harness,
-        cwd: record.cwd,
-        resume: record.id,
-        file: currentFileName,
-      })
-    })
-
-    const drop = document.createElement('button')
-    drop.type = 'button'
-    drop.className = 'drop'
-    drop.textContent = '✕'
-    drop.title = 'Forget this conversation'
-    drop.addEventListener('click', (event: Event) => {
-      event.stopPropagation()
-      agentBridge.send({ kind: 'forget', id: record.id })
-    })
-
-    row.append(open, drop)
-    agentHistoryMenu.appendChild(row)
-  }
+  for (const record of agentSessions) agentHistoryMenu.appendChild(historyRow(record))
 }
 
 agentHistoryOpen.addEventListener('click', (event: Event) => {

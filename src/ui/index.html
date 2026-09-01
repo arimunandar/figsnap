@@ -186,7 +186,6 @@
             <span class="spacer"></span>
             <button class="toggle" type="button" id="agent-writes" aria-pressed="false"
               title="Allow the agent to change this file">Edits</button>
-            <button class="button primary" type="button" id="agent-start" disabled>Start</button>
             <button class="icon-button" type="button" id="agent-more" aria-haspopup="true"
               aria-expanded="false" title="Session">&#8943;</button>
             <div class="command-menu more-menu" id="agent-more-menu" hidden>
@@ -207,7 +206,22 @@
           </header>
 
           <div class="agent-empty" id="agent-idle">
-            <p class="agent-empty-line">Start a session to talk about this file.</p>
+            <svg class="welcome-mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+              <rect x="8" y="8" width="16" height="16" rx="1" fill="none" stroke="currentColor" stroke-width="1.25" />
+              <g fill="var(--figma-color-bg, #fff)" stroke="currentColor" stroke-width="1.25">
+                <rect x="5.5" y="5.5" width="5" height="5" rx="1.5" />
+                <rect x="21.5" y="5.5" width="5" height="5" rx="1.5" />
+                <rect x="5.5" y="21.5" width="5" height="5" rx="1.5" />
+                <rect x="21.5" y="21.5" width="5" height="5" rx="1.5" />
+              </g>
+            </svg>
+            <h2 class="welcome-title" id="agent-idle-title">Ready when you are</h2>
+            <p class="welcome-lead agent-empty-line" id="agent-idle-lead"></p>
+            <button class="button primary idle-start" type="button" id="agent-start" disabled>Start a session</button>
+            <div class="idle-recent" id="agent-idle-recent" hidden>
+              <span class="idle-recent-head">Or pick up where you left off</span>
+              <div class="idle-list" id="agent-idle-list"></div>
+            </div>
           </div>
 
           <div class="agent-chat" id="agent-chat" hidden>
