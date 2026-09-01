@@ -431,7 +431,17 @@ export function createRunner({ plugin, log, emit, mcpServers, sessions, allowEdi
     modes = null
     commands = []
 
-    const canLoad = capabilities.loadSession === true
+    // A resume id is only trusted for the harness that minted it. `session/load`
+    // cannot be trusted to reject a foreign one itself: DeepSeek and Claude Code
+    // spawn the identical `claude` CLI, whose own on-disk session store is keyed
+    // by id and cwd alone, blind to which base URL or key was active when the
+    // id was created — so a Claude Code id loads cleanly under DeepSeek and
+    // silently keeps talking to whichever endpoint is now configured. The
+    // daemon's own record is what actually knows which row created an id.
+    const resumeRecord = resume ? await sessions.find(resume) : null
+    const wrongHarness = resumeRecord !== null && resumeRecord.harness !== next.id
+    if (wrongHarness) log(`not resuming ${resume}: it belongs to ${resumeRecord.harnessName}, not ${next.name}`)
+    const canLoad = capabilities.loadSession === true && !wrongHarness
     if (resume && canLoad) {
       try {
         const reloaded = await connection.agent.request(acp.methods.agent.session.load, {
