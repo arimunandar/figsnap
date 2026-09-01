@@ -222,20 +222,83 @@ function inline(text: string, into: Node) {
   if (rest !== '') into.appendChild(document.createTextNode(scrubBase64(rest)))
 }
 
+/** What the panel's own highlighter can read, and what a fence usually says. */
+const DIALECTS: Record<string, 'tsx' | 'html' | 'css'> = {
+  tsx: 'tsx',
+  jsx: 'tsx',
+  ts: 'tsx',
+  typescript: 'tsx',
+  js: 'tsx',
+  javascript: 'tsx',
+  json: 'tsx',
+  html: 'html',
+  xml: 'html',
+  svg: 'html',
+  vue: 'html',
+  css: 'css',
+  scss: 'css',
+  less: 'css',
+}
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  tsx: 'TSX',
+  jsx: 'JSX',
+  ts: 'TypeScript',
+  typescript: 'TypeScript',
+  js: 'JavaScript',
+  javascript: 'JavaScript',
+  json: 'JSON',
+  html: 'HTML',
+  css: 'CSS',
+  scss: 'SCSS',
+  sh: 'Shell',
+  bash: 'Shell',
+  zsh: 'Shell',
+  shell: 'Shell',
+  md: 'Markdown',
+  py: 'Python',
+  python: 'Python',
+  swift: 'Swift',
+  kotlin: 'Kotlin',
+}
+
+/**
+ * A code block, with the two things anyone wants from one: to know what it is,
+ * and to take it away. The copy button carries no text of its own — the click
+ * is delegated and reads the block beside it — so the markup stays a fragment
+ * this module can build without knowing about the clipboard.
+ */
 function codeBlock(language: string, lines: string[]): HTMLElement {
+  const body = lines.join('\n')
+  const block = document.createElement('div')
+  block.className = 'md-code-block'
+
+  const head = document.createElement('div')
+  head.className = 'md-code-head'
+  const label = document.createElement('span')
+  label.className = 'md-code-language'
+  label.textContent = LANGUAGE_NAMES[language] ?? (language === '' ? 'Code' : language)
+  const copy = document.createElement('button')
+  copy.type = 'button'
+  copy.className = 'md-copy'
+  copy.textContent = 'Copy'
+  copy.title = 'Copy this block'
+  head.append(label, copy)
+
   const pre = document.createElement('pre')
   pre.className = 'md-code'
   const code = document.createElement('code')
-  const known = ['tsx', 'ts', 'jsx', 'js', 'javascript', 'typescript'].indexOf(language) !== -1
-  const dialect = known ? 'tsx' : language === 'html' ? 'html' : language === 'css' ? 'css' : null
+  const dialect = DIALECTS[language] ?? null
   if (dialect === null) {
-    code.textContent = scrubBase64(lines.join('\n'))
+    code.textContent = scrubBase64(body)
   } else {
     // Already escaped by the highlighter; only its own spans are markup.
-    code.innerHTML = highlightLines(lines.join('\n'), dialect).join('\n')
+    code.innerHTML = highlightLines(body, dialect).join('\n')
   }
   pre.appendChild(code)
-  return pre
+
+  block.append(head, pre)
+  return block
 }
 
 /** The rendered answer, as a fragment ready to drop into the transcript. */

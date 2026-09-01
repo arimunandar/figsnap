@@ -2396,6 +2396,23 @@ let agentActivity: Activity | null = null
 let agentProse: HTMLDivElement | null = null
 let agentProseFrame: number | undefined
 
+// Delegated rather than bound per block: the transcript re-renders on every
+// chunk while an answer streams, and a listener per code block would be rebuilt
+// dozens of times for one paragraph.
+agentLog.addEventListener('click', async (event: Event) => {
+  const button = (event.target as HTMLElement).closest('.md-copy') as HTMLButtonElement | null
+  if (button === null) return
+  const code = button.closest('.md-code-block')?.querySelector('code')
+  if (!code) return
+  const copied = await copyText(code.textContent ?? '')
+  button.textContent = copied ? 'Copied' : 'Select it instead'
+  button.classList.toggle('done', copied)
+  window.setTimeout(() => {
+    button.textContent = 'Copy'
+    button.classList.remove('done')
+  }, 1600)
+})
+
 /** Sticks to the bottom only while the reader is already there. */
 function agentScroll() {
   const nearBottom = agentLog.scrollHeight - agentLog.scrollTop - agentLog.clientHeight < 100

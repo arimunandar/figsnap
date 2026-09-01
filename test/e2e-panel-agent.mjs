@@ -389,6 +389,16 @@ check('emphasis and code spans become real elements',
 check('bullets become a list', answer()?.querySelectorAll('.md-list li').length === 2)
 check('and a fenced block becomes a code block',
   answer()?.querySelector('.md-code code')?.textContent.includes('color: red') === true)
+check('labelled with what it is', answer()?.querySelector('.md-code-language')?.textContent === 'CSS')
+
+// A snippet nobody can take away is a screenshot of a snippet.
+const copyButton = () => answer()?.querySelector('.md-copy')
+let copiedText = null
+window.navigator.clipboard = { writeText: async (text) => { copiedText = text } }
+copyButton().click()
+await settle()
+check('and it can be taken away', copiedText?.includes('.a { color: red }') === true, String(copiedText))
+check('with the button saying so', copyButton().textContent === 'Copied')
 check('with none of the markers left in the text',
   answer()?.textContent.includes('**') === false && answer()?.textContent.includes('##') === false)
 

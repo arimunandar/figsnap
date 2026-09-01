@@ -1945,14 +1945,60 @@ select:focus {
   font: 10.5px/1.5 SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.md-code {
+.md-code-block {
   margin: 8px 0;
-  padding: 8px 10px;
-  max-height: 260px;
-  overflow: auto;
   border: 1px solid var(--figma-color-border, #e6e6e6);
   border-radius: 8px;
   background: var(--figma-color-bg-secondary, #fafafa);
+  overflow: hidden;
+}
+
+.md-code-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--figma-color-border, #e6e6e6);
+}
+
+.md-code-language {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.md-copy {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  cursor: pointer;
+}
+
+.md-copy:hover {
+  border-color: var(--figma-color-border, #e6e6e6);
+  color: var(--figma-color-text, #000);
+}
+
+.md-copy.done {
+  border-color: transparent;
+  color: var(--figma-color-text-success, #14ae5c);
+}
+
+.md-code {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 280px;
+  overflow: auto;
 }
 
 .md-code code {
