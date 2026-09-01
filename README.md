@@ -82,6 +82,15 @@ and the **Relay** page, which holds the account, the connection, the settings,
 the API browser and the Claude Code skill installer. Escape returns to the
 workspace. The manual itself lives on the relay, at `/docs`.
 
+**–** in the top bar minimises the panel to a 340×40 strip, so the canvas is
+clear while you go and find a layer. The socket stays up and selection keeps
+arriving: the strip names whatever you click, with its type and size, so you can
+line a selection up and then restore. Clicking anywhere on the strip restores it.
+While minimised the automatic preview is skipped — there is nowhere to show it,
+and clicking around the canvas is the point — and the shrunken window is not
+stored as the size you chose, so restoring returns to whatever you had dragged
+it to.
+
 Right: the generated output in a read-only editor with line numbers and syntax
 highlighting — five tabs:
 
@@ -237,6 +246,7 @@ run `npm run build` first, since it reads the built file:
 | `e2e-panel-auth.mjs` | the built `dist/ui.html` in jsdom: sign in, auto-connect, resume, expiry, the API browser |
 | `e2e-folders.mjs` | the real `dist/code.js` behind a relay: the saved store, folders, migration |
 | `e2e-panel-folders.mjs` | the Saved pane's folder UI in the built panel |
+| `e2e-panel-minimise.mjs` | minimising: what hides, what the main thread is told, what keeps working |
 | `e2e-tree.mjs` | `?depth=` walks and the `format` picker, on the real main thread |
 
 `npm test` never touches the network. To check a relay you have actually deployed:

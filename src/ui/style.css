@@ -119,6 +119,42 @@ body {
   grid-row: 2;
 }
 
+/* -------------------------------------------------------------- minimised */
+
+/* A strip of header and nothing else: the canvas is the point of minimising,
+   so everything that would cover it is gone rather than merely small. */
+body.mini {
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+body.mini .body,
+body.mini .footbar,
+body.mini .full-page,
+body.mini .auth-page {
+  display: none !important;
+}
+
+body.mini .topbar {
+  grid-row: 1;
+  padding: 0 8px;
+  border-bottom: none;
+}
+
+/* The selection name and the connection light are the two things still worth
+   knowing while the panel is out of the way. */
+body.mini #subtitle,
+body.mini .check.relay,
+body.mini #relay-status,
+body.mini #refresh,
+body.mini #relay-toggle-page {
+  display: none;
+}
+
+body.mini .title {
+  font-size: 11px;
+}
+
 /* ------------------------------------------------------------------ auth */
 
 /* The gate is the whole window when it shows, so it centres rather than fills. */

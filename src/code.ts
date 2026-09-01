@@ -86,6 +86,7 @@ type FromUI =
   | { type: 'move-saved'; ids: string[]; folder: string }
   | { type: 'refresh-saved' }
   | { type: 'resize'; width: number; height: number }
+  | { type: 'minimise'; on: boolean }
   | { type: 'save-settings'; url: string; token: string; email?: string }
   | { type: 'sign-out' }
   | { type: 'open-url'; url: string }
@@ -102,8 +103,13 @@ type ExtractOptions = {
 const defaults: ExtractOptions = { scale: 2, selectionOnly: false, inlineInstances: false, outputs: ALL_OUTPUTS }
 let capturing = false
 let captureTimer: number | undefined
+// While minimised the window size is not the user's choice, so it is not stored.
+let minimised = false
 
 const DEFAULT_SIZE = { width: 1180, height: 760 }
+// Minimised is a strip of header, not a small window: it deliberately sits below
+// MIN_SIZE so the canvas is clear while the plugin keeps running.
+const MINI_SIZE = { width: 340, height: 40 }
 const MIN_SIZE = { width: 520, height: 460 }
 const MAX_SIZE = { width: 1800, height: 1200 }
 const SIZE_KEY = `size:${figma.root.id}`
@@ -112,23 +118,26 @@ figma.showUI(__html__, { ...DEFAULT_SIZE, themeColors: true })
 
 /** Restores whatever size the user last dragged the window to, per file. */
 async function restoreSize(): Promise<void> {
+  let size = DEFAULT_SIZE
   try {
     const stored = await figma.clientStorage.getAsync(SIZE_KEY)
     if (stored && typeof stored === 'object') {
       const { width, height } = stored as { width?: number; height?: number }
-      if (typeof width === 'number' && typeof height === 'number') {
-        figma.ui.resize(
-          Math.min(MAX_SIZE.width, Math.max(MIN_SIZE.width, Math.round(width))),
-          Math.min(MAX_SIZE.height, Math.max(MIN_SIZE.height, Math.round(height))),
-        )
-      }
+      if (typeof width === 'number' && typeof height === 'number') size = { width, height }
     }
   } catch {
     // A missing or malformed entry just means the default size.
   }
+  // Always resizes, not only when something was stored: this is also the way
+  // back from minimised, where the window is 40px tall and nothing is showing.
+  figma.ui.resize(
+    Math.min(MAX_SIZE.width, Math.max(MIN_SIZE.width, Math.round(size.width))),
+    Math.min(MAX_SIZE.height, Math.max(MIN_SIZE.height, Math.round(size.height))),
+  )
 }
 
 async function rememberSize(width: number, height: number): Promise<void> {
+  if (minimised) return
   try {
     await figma.clientStorage.setAsync(SIZE_KEY, { width: Math.round(width), height: Math.round(height) })
   } catch {
@@ -943,8 +952,11 @@ function extractSelection(): void {
     rows: selection.slice(0, MAX_BATCH).map(toRow),
   })
   // Auto-extracting every node of a multi-selection would be surprising and
-  // slow; the panel offers an explicit "Extract N selected" instead.
-  if (selection.length === 1) void extract(selection[0])
+  // slow; the panel offers an explicit "Extract N selected" instead. Minimised
+  // there is nowhere to show a preview either, and clicking around the canvas is
+  // the whole point of being minimised — so the export is skipped and only the
+  // selection itself is reported.
+  if (selection.length === 1 && !minimised) void extract(selection[0])
 }
 
 function scheduleSelectionExtract(): void {
@@ -1593,6 +1605,17 @@ figma.ui.onmessage = (msg: FromUI) => {
       break
     case 'resize':
       void rememberSize(msg.width, msg.height)
+      break
+    case 'minimise':
+      minimised = msg.on
+      if (msg.on) {
+        figma.ui.resize(MINI_SIZE.width, MINI_SIZE.height)
+      } else {
+        // Back to whatever size the user had dragged it to, not the default,
+        // and with a preview of whatever they picked while it was out of the way.
+        void restoreSize()
+        scheduleSelectionExtract()
+      }
       break
     case 'save-settings':
       void saveSettings(msg.url, msg.token, msg.email ?? '')

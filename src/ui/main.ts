@@ -117,6 +117,7 @@ const scaleSelect = document.getElementById('scale') as HTMLSelectElement
 const selectionOnly = document.getElementById('selection-only') as HTMLInputElement
 const inlineInstances = document.getElementById('inline-instances') as HTMLInputElement
 const refreshButton = document.getElementById('refresh') as HTMLButtonElement
+const minimiseButton = document.getElementById('minimise') as HTMLButtonElement
 const copyImageButton = document.getElementById('copy-image') as HTMLButtonElement
 const downloadButton = document.getElementById('download') as HTMLButtonElement
 const copyCodeButton = document.getElementById('copy-code') as HTMLButtonElement
@@ -902,6 +903,26 @@ type View = 'work' | 'relay' | 'auth'
 
 let view: View = 'auth'
 
+// ------------------------------------------------------------------ minimise
+//
+// The panel opens at 1180x760, which covers most of the canvas — awkward when
+// the next thing you want to do is pick a layer. Minimised it is a 340x40 strip:
+// the socket stays up, the selection keeps arriving, and the name of whatever
+// you click shows in the bar, so you can line up a selection and then restore.
+
+let minimised = false
+
+function setMinimised(on: boolean) {
+  if (minimised === on) return
+  minimised = on
+  document.body.classList.toggle('mini', on)
+  minimiseButton.textContent = on ? '\u2922' : '\u2013'
+  minimiseButton.title = on ? 'Restore the panel' : 'Minimise — clears the canvas so you can select'
+  post({ type: 'minimise', on })
+}
+
+minimiseButton.addEventListener('click', () => setMinimised(!minimised))
+
 function setView(next: View) {
   view = next
   if (next === 'auth') refreshAuthPage()
@@ -923,6 +944,14 @@ function setView(next: View) {
 }
 
 relayPageToggle.addEventListener('click', () => setView(view === 'relay' ? 'work' : 'relay'))
+
+// While minimised the strip itself restores: a 340px bar is an easier target
+// than one 24px button, and there is nothing else on it to click.
+topbar.addEventListener('click', (event) => {
+  if (!minimised) return
+  if ((event.target as HTMLElement).closest('#minimise')) return
+  setMinimised(false)
+})
 
 // -------------------------------------------------------------- relay page
 
@@ -2035,6 +2064,13 @@ window.addEventListener('message', (event: MessageEvent) => {
       renderTree()
       renderActiveList()
       refreshPrimary()
+      if (msg.ids.length === 1 && msg.rows.length === 1) {
+        // Named as soon as it is picked, rather than when the extraction lands:
+        // minimised there is no extraction, and the bar is all there is to read.
+        const row = msg.rows[0]
+        title.textContent = row.name
+        subtitle.textContent = `${row.type} · ${row.width}×${row.height}`
+      }
       if (msg.ids.length > 1) {
         // A multi-selection has no single preview, so summarise it instead.
         title.textContent = `${msg.ids.length} layers selected`
@@ -2108,6 +2144,7 @@ let resizeTimer: number | undefined
 window.addEventListener('resize', () => {
   if (resizeTimer !== undefined) clearTimeout(resizeTimer)
   resizeTimer = setTimeout(() => {
+    if (minimised) return
     post({ type: 'resize', width: window.innerWidth, height: window.innerHeight })
   }, 400)
 })

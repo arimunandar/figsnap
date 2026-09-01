@@ -109,6 +109,26 @@ export function docsSections({ httpBase, relayState, nodeId, surface = 'http' })
       ],
     },
     {
+      heading: 'Getting the panel out of the way',
+      blocks: [
+        {
+          type: 'p',
+          text:
+            'The panel opens wide enough to cover most of the canvas, which is awkward when the next thing you want to do is go and find a layer. **–** in the top bar collapses it to a strip 340px wide and 40px tall.',
+        },
+        {
+          type: 'p',
+          text:
+            'It keeps running while it is down there. The relay socket stays connected, selection changes still reach an agent over `/events`, and the strip names whatever you click with its type and size — so you can line a selection up and then restore. Clicking anywhere on the strip brings it back, to whatever size you had dragged it to rather than the default.',
+        },
+        {
+          type: 'p',
+          text:
+            'The automatic preview is skipped while minimised: there is nowhere to show it, and clicking around the canvas is the whole point. An `/extract` over HTTP still works exactly as before.',
+        },
+      ],
+    },
+    {
       heading: 'The Saved set',
       blocks: [
         {
