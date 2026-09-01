@@ -277,6 +277,52 @@ const version = await command('save_version', { title: 'Before purple to red swa
 check('save_version writes a named checkpoint',
   version.ok === true && figma.versions[0]?.title === 'Before purple to red swap')
 
+// ---------------------------------------------------------------- selecting
+//
+// Not a write — nothing in the file changes — but the one command that drives
+// the canvas rather than reading it. An agent that has found the CTA has no way
+// to show it to anyone without this.
+
+figma.undos.length = 0
+figma.viewport.framed.length = 0
+panelMessages.length = 0
+figma.currentPage.selection = []
+
+const shown = await command('set_selection', { nodeId: '1:2' })
+check('set_selection selects the node', shown.ok === true &&
+  figma.currentPage.selection.map((node) => node.id).join() === '1:2', shown.error ?? '')
+check('and scrolls the canvas to it, which is the point of pointing',
+  figma.viewport.framed.at(-1)?.join() === '1:2', JSON.stringify(figma.viewport.framed))
+check('answering with the layer, so the caller can say what it showed',
+  shown.data.rows[0]?.name === button.name && shown.data.rows[0]?.id === '1:2',
+  JSON.stringify(shown.data.rows))
+
+// Figma does not promise `selectionchange` for a programmatic assignment, so a
+// panel left previewing the previous layer would read as a selection that did
+// not take.
+await settled(500)
+check('the panel is told, the way a click on the canvas would tell it',
+  panelMessages.some((message) => message.type === 'selected' && message.id === '1:2'),
+  panelMessages.map((message) => message.type).join(','))
+
+check('selecting is not editing, so it leaves no undo step',
+  figma.undos.length === 0, `${figma.undos.length} commits`)
+
+const bothShown = await command('set_selection', { nodeIds: ['1:2', '1:3'] })
+check('several at once are selected and framed together',
+  bothShown.ok === true && figma.currentPage.selection.map((node) => node.id).join() === '1:2,1:3' &&
+  figma.viewport.framed.at(-1)?.join() === '1:2,1:3', bothShown.error ?? '')
+
+const nothingNamed = await command('set_selection', {})
+check('and naming nothing is refused rather than clearing the selection',
+  nothingNamed.ok === false && figma.currentPage.selection.length === 2, String(nothingNamed.error))
+
+const goneNode = await command('set_selection', { nodeId: 'does:not:exist' })
+check('an id that resolves to nothing says so',
+  goneNode.ok === false, String(goneNode.error))
+
+figma.currentPage.selection = [screen]
+
 // ------------------------------------------------------------------- refusal
 
 const nowhere = await command('set_fill', { nodeId: 'does:not:exist', color: { r: 1, g: 0, b: 0 } })

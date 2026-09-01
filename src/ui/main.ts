@@ -1501,6 +1501,7 @@ function sessionExpired(reason: string) {
   session = 'signed-out'
   relayToken = ''
   relayEmail = ''
+  announceRelayAccount()
   bridge.disconnect()
   post({ type: 'sign-out' })
   setAuthMode('login')
@@ -2191,6 +2192,7 @@ window.addEventListener('message', (event: MessageEvent) => {
       relayToken = msg.token
       relayEmail = msg.email ?? ''
       relayProfiles = msg.profiles ?? []
+      announceRelayAccount()
       applySettings(first, changed)
       if (view === 'relay') {
         refreshRelayPage()
@@ -2368,8 +2370,13 @@ const agentBridge = createBridge({
     if (status === 'open') {
       // The daemon has no idea a panel appeared until one says so, and the
       // answer is both the harness list and wherever the session had got to.
-      agentBridge.send({ kind: 'hello' })
-      agentBridge.send({ kind: 'writes', on: agentWrites })
+      //
+      // Writes is deliberately not pushed here. The daemon owns that switch —
+      // it can also be seeded with `figsnap-agent --allow-edits` — and a panel
+      // that announced its own stored value on connect would silently turn off
+      // a flag the person at the terminal had just turned on. The `state` frame
+      // that follows sets the toggle instead.
+      agentBridge.send({ kind: 'hello', account: relayEmail })
       agentBridge.send({ kind: 'auto', on: agentAuto })
       void loadAgentTools()
       if (agentCwd === '') void browseAgent(null)
@@ -2379,6 +2386,19 @@ const agentBridge = createBridge({
   },
   onFrame: (message) => handleAgentFrame(message),
 })
+
+/**
+ * Who this panel is signed into the relay as, told to the daemon.
+ *
+ * Not a credential and not treated as one: the daemon uses it only to refuse a
+ * panel and a daemon signed in as two different people, which is the case that
+ * makes `figsnap-agent login` mean anything. It rides with `hello` on connect,
+ * and again whenever the designer signs in or out while the panel is open.
+ */
+function announceRelayAccount() {
+  if (agentStatus !== 'open') return
+  agentBridge.send({ kind: 'account', email: relayEmail })
+}
 
 // --------------------------------------------------------------- transcript
 
@@ -2853,6 +2873,12 @@ function handleAgentFrame(message: Record<string, unknown>) {
         commands: sent.commands ?? [],
       }
       agentSession = next
+      // Adopted, not asserted: the daemon is the one gate, so whatever it says
+      // about writes is what is true — including a value it was started with.
+      if (next.writes !== agentWrites) {
+        agentWrites = next.writes === true
+        saveAgentSettings()
+      }
       if (next.sessionId !== null && next.sessionId !== agentSessionId) {
         agentSessionId = next.sessionId
         saveAgentSettings()

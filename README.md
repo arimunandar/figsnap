@@ -10,6 +10,9 @@ same designs over HTTP while you work.
 - **Inside the plugin**: an [agent you chat with in the panel](#an-agent-inside-the-plugin),
   running on your own machine under your own login, that can read the open file
   and — when you let it — change it.
+- **From a terminal**: the same 33 tools as an
+  [MCP server](#using-the-mcp-server-step-by-step), so Claude Code — or any MCP
+  client — reads and edits the open file from wherever you already work.
 
 TypeScript, bundled with esbuild. The relay is a Cloudflare Worker.
 
@@ -426,10 +429,12 @@ checkpoint before a long run and you get a named entry in version history.
 | --- | --- |
 | `figma_get_selection` | what is selected right now |
 | `figma_get_tree`, `figma_get_children` | walk the page, a branch at a time |
-| `figma_extract` | the full extraction: HTML, `figmaCss`, TSX, CSS modules |
+| `figma_extract` | the full extraction: HTML, `figmaCss`, TSX, CSS modules — one node, or up to 20 |
 | `figma_export_png` | the picture itself, as an image the model can look at |
 | `figma_resolve_url`, `figma_list_saved` | Figma links, and the curated set |
 | `figma_list_library` | the components, styles and variables this file has |
+| `figma_select` | select a node and scroll the canvas to it — how you *show* someone what you found |
+| `figma_saved` | the saved set and its folders: nine actions behind one argument |
 | **making things** | |
 | `figma_create_frame`, `figma_create_text` | the two most of a layout is built from |
 | `figma_create_rectangle`, `figma_create_ellipse` | dividers, bars, avatars, placeholders |
@@ -460,31 +465,97 @@ Nothing is truncated on the way through. Figma's own MCP server caps a response
 at 20 kB; `figma_extract` returns whatever the node is, which for a real screen
 is well past that, with images inlined and icons as real SVG.
 
-### The same designs from a terminal
+Two of them fold a lot of plugin into one argument, because thirty-odd tool
+descriptions already cost ~22 kB on every request and thirteen more would have
+cost ~32 kB:
 
-The `figma_*` tools are an MCP server, and nothing about it is private to the
-plugin's own chat. Any MCP client on the machine running Figma can spawn it:
+- **`figma_extract` takes a batch.** `{"selection":true}`,
+  `{"saved":true,"folder":"Checkout"}`, `{"nodeIds":[…]}`, `{"urls":[…]}` — up
+  to 20, one entry per input, and one bad id never sinks the rest. No batch
+  returns an image whatever `formats` says, because twenty base64 PNGs in one
+  tool result is not an answer anyone can read; `figma_export_png` is the tool
+  for a picture and it takes a node at a time.
+- **`figma_saved` takes an `action`.** `list`, `folders`, `save`, `unsave`,
+  `clear`, `move`, `newFolder`, `renameFolder`, `deleteFolder`. It is a bookmark
+  list in the plugin's own storage rather than the design, so it is not behind
+  Edits and there is nothing to undo.
+
+`figma_select` is the one that goes the other way. Everything else answers a
+question about the file; this one puts a node on the designer's screen, which is
+what an agent that has found the CTA needs in order to point at it. It changes
+no design data, so it works whether or not Edits is on.
+
+**A picture is always an image block, never base64 in text.** `figma_extract`
+with `png` among its `formats` appends the render as a real image content block
+alongside the text, and `figma_export_png` is the same render on its own. The
+relay's `pngData` — the bytes inline as a data URI — is deliberately *not* on the
+tool schema: over HTTP it is a real choice, because the caller may be a script
+with nothing able to fetch a URL later, but over MCP it costs about forty times
+the tokens of the same picture as an image, and a screen at scale 3 is 141 kB of
+base64, which exceeds what a tool result can carry at all. Ask for it anyway
+through the raw `/tool` route and a small image still inlines; a large one comes
+back as its byte count and a pointer to `figma_export_png`.
+
+### Resources
+
+The MCP server publishes resources as well as tools, so a client that can
+`@`-mention context need not spend a call on the three things a question about a
+Figma file almost always needs:
+
+| | |
+| --- | --- |
+| `figma://selection` | what is selected, extracted |
+| `figma://page` | the layer tree of the current page |
+| `figma://library` | the components, styles and variables |
+| `figma://node/21:10314` | a template: one node's extraction, by id |
+
+Each read is a tool that already exists, going out through the same route into
+the daemon, so nothing here can drift from what the tools answer.
+
+### Signing in
+
+Two credentials guard the daemon and they answer different questions. The token
+in `~/.figsnap/agent-token` answers *may this process talk to the daemon* — the
+right shape for a service bound to 127.0.0.1, and it says nothing about who. An
+account answers that, and it is the only one of the two anybody can revoke from
+somewhere else.
 
 ```bash
-claude mcp add figsnap -- npx -y figsnap-mcp
+npx figsnap-agent login       # logout, whoami
 ```
 
-No configuration. `figsnap-agent` listens on a fixed port and writes its token
-to `~/.figsnap/agent-token`; `figsnap-mcp` finds both. `figsnap-agent --mcp`
-prints the same thing as a JSON block for clients that want one.
+It prints a short code and opens the relay's own sign-in page. You sign in there
+with your email and password; the daemon is handed a fresh token scoped to your
+room and writes it to `~/.figsnap/account.json`. **The password never reaches the
+CLI** — this is the relay's device-pairing flow, built so nobody copies a
+48-character token by hand, and a terminal is exactly what it is for.
 
-So there are three ways to reach the open file, and the skill in
-`.claude/skills/figsnap` teaches an agent to work out which one it is on:
+It is **opt-in**, because the daemon is loopback-only and otherwise needs no
+network at all: making a hosted round trip mandatory would break using it on a
+plane, and break the promise that `claude mcp add` needs no setup. Where it
+should be a requirement:
 
-| | reads | writes | needs |
-| --- | --- | --- | --- |
-| the plugin's Agent column | ✓ | ✓ | nothing |
-| `figsnap-mcp` from a project | ✓ | ✓ | the daemon running |
-| the relay over HTTP | ✓ | — | an account |
+```bash
+npx figsnap-agent --require-login
+```
 
-**Edits still gates it.** An agent reaching in from a terminal gets the same
-refusal on the writing tools until the designer turns Edits on in the panel,
-because that switch lives in the daemon rather than in any one client.
+What is not optional is what happens once an account *is* attached. It is checked
+at startup and re-asked as the daemon runs, so **revoking a token on the relay
+stops the tools within the minute** rather than at the next restart. Lower
+`FIGSNAP_ACCOUNT_RECHECK_MS` if that is still too slow.
+
+And the panel and the daemon have to be the same person. The panel volunteers
+which account it is signed into; a daemon signed in as somebody else refuses,
+naming both. Without that, signing in would be theatre — anyone on the machine
+could sign in as themselves and still drive the file you have open.
+
+What it buys is accountability and central revocation, not local access control:
+the agent token already handles *that*, and on a machine somebody is already
+sitting at there is nothing further to gain.
+
+Note that MCP's authorization spec covers HTTP transports; `figsnap-mcp` is
+stdio, so it takes no credential of its own and simply relays the daemon's
+refusal. Real MCP OAuth would mean moving the server to HTTP.
 
 ### Keeping it to your machine
 
@@ -518,6 +589,189 @@ npm run probe          # then import probe/manifest.json in Figma, leave it an h
 
 It logs every disconnect, every new runtime and every frozen timer with a
 timestamp, and prints a verdict on the way out.
+
+## Using the MCP server, step by step
+
+The `figma_*` tools are an MCP server, and nothing about them is private to the
+plugin's own chat. Any MCP client on the machine running Figma can spawn it — so
+Claude Code in a terminal, an editor, or a script reads and edits the file the
+designer has open, with no Figma API token and no file export.
+
+There are four moving parts and they have to be up in this order:
+
+```
+  your MCP client  ──stdio──►  figsnap-mcp  ──HTTP──►  figsnap-agent  ──ws──►  the plugin
+  (Claude Code)                (spawned per            (you start it)         (open in Figma)
+                                client, no state)
+```
+
+### Before you start
+
+- **Node 20 or newer**, and the **Figma desktop app** — a development plugin
+  cannot be loaded in the browser.
+- Everything below runs on **the machine Figma is on**. The daemon binds
+  `127.0.0.1`; there is no remote mode.
+
+### 1. Build the plugin, once
+
+```bash
+git clone https://github.com/arimunandar/figsnap.git && cd figsnap
+npm install
+npm run build
+```
+
+`manifest.json` points at `dist/code.js` and `dist/ui.html`, which do not exist
+until you build.
+
+### 2. Import it and open it in Figma
+
+Desktop app → **Plugins → Development → Import plugin from manifest** → this
+folder's `manifest.json`. Then **Plugins → Development → Figsnap**.
+
+**Leave it open.** This is the one limit not worth engineering around: `figma.*`
+exists only while the plugin is running, so a daemon with no panel attached has
+nothing to forward to. Close the plugin and every tool answers *"the Figsnap
+plugin is not open in Figma"* rather than timing out.
+
+### 3. Start the daemon
+
+In a terminal of its own, because it stays in the foreground:
+
+```bash
+npm run agent                    # in this repo
+npm run agent -- --allow-edits   # if you want the writing tools open too
+```
+
+It prints its port, its token, the harnesses it found, and whether edits are
+allowed:
+
+```
+figsnap-agent 0.1.0
+  panel socket   ws://127.0.0.1:3056/panel
+  http           http://127.0.0.1:3056
+  token          <48 characters>
+  harnesses      Claude Code, Codex
+  edits          off — turn them on in the plugin, or start with --allow-edits
+  account        none — optional; `figsnap-agent login` to attach one
+```
+
+### 4. Pair the panel with the daemon, once
+
+In the plugin, **⋯ → Setup**, paste that token, **Connect**. It is stored per
+user, so this is a first-time-only step — afterwards the panel dials on open.
+
+Check both halves are up:
+
+```bash
+curl -s http://127.0.0.1:3056/health
+```
+
+`panelConnected: true` is the line that matters. Anything else and the tools have
+nothing to talk to.
+
+### 5. Register the MCP server
+
+The package is not published yet, so point at the file in your clone rather than
+at `npx`:
+
+```bash
+claude mcp add figsnap -s user -- node /absolute/path/to/figma-plugin/agent/mcp-stdio.mjs
+```
+
+`-s user` makes it available in every project; drop it for this project only.
+Once the package is on npm, the configuration-free form is the one to use:
+
+```bash
+claude mcp add figsnap -- npx -y figsnap-mcp
+```
+
+Either way there is **nothing to configure**: the daemon listens on a fixed port
+and writes its token to `~/.figsnap/agent-token`, and `figsnap-mcp` finds both.
+For a client that wants a JSON block instead of a command, `figsnap-agent --mcp`
+prints one.
+
+### 6. Restart your MCP client
+
+An MCP client reads its server list at startup, so a server added mid-session
+does not appear in it — `/mcp` will show every server *except* the one you just
+added. Restart, keeping any flags you were running with:
+
+```bash
+claude --continue      # resumes the conversation with the new config loaded
+```
+
+### 7. Check it
+
+```bash
+claude mcp list
+```
+
+You want `figsnap · ✔ Connected`. Then, in a session:
+
+```
+figma_get_selection
+```
+
+It should name the layer you have selected in Figma. If it does, all four parts
+of the chain are up.
+
+### What to ask for
+
+The tools are listed [above](#the-tools). In practice, four cover most of it:
+
+| Ask | Tool |
+| --- | --- |
+| *"what does this screen actually say?"* | `figma_extract` |
+| *"show me what it looks like"* | `figma_export_png` |
+| *"find the CTA and show it to me"* | `figma_get_tree` then `figma_select` |
+| *"port these five screens"* | `figma_extract` with `{"nodeIds":[…]}` |
+
+And in a client that can `@`-mention a resource, `@figma://selection` puts the
+current selection's extraction straight into the prompt with no tool call at all.
+
+### Turning the writing tools on
+
+Reading is always on. **Edits** decides whether the canvas can be touched at all,
+and one gate serves both surfaces, because the switch lives in the daemon rather
+than in any one client. Which means it can be set from either end — the **Edits**
+pill in the plugin's Agent column, or:
+
+```bash
+npx figsnap-agent --allow-edits      # or FIGSNAP_ALLOW_EDITS=1
+```
+
+Still an explicit human act, just at the terminal. The panel's pill shows it on
+and still turns it off. Without it, an agent in a terminal gets the same refusal
+on the writing tools as one in the panel would.
+
+### When something does not answer
+
+Every refusal names its own fix. These are the ones you will meet:
+
+| It says | What to do |
+| --- | --- |
+| `No Figsnap daemon at http://127.0.0.1:3056` | start it — step 3 |
+| `The Figsnap plugin is not open in Figma` | open the plugin — step 2 |
+| `The Figsnap daemon rejected the token` | `FIGSNAP_AGENT_TOKEN` is set to something stale, or the daemon rotated its token with `--new-token`. Unset the variable and let it read `~/.figsnap/agent-token` |
+| `Editing the file is switched off` | turn **Edits** on in the panel, or restart the daemon with `--allow-edits` |
+| `Unknown tool: figma_select` | the daemon is running an older build than the MCP server. Restart the daemon |
+| `Unknown command: set_selection` | Figma is running an older build. `npm run build`, then close and reopen the plugin — Figma loads the bundle at launch |
+| `Nobody is signed in` | `figsnap-agent login` — see [Signing in](#signing-in-1) |
+| `This daemon is signed in as … but the Figma plugin is signed in as …` | the terminal and the plugin are two different accounts. Sign out of one |
+| the server is missing from `/mcp` | your client loaded its config before you added it. Restart — step 6 |
+
+To take it out again: `claude mcp remove figsnap -s user`.
+
+### Three ways in
+
+So there are three ways to reach the open file, and the skill in
+`.claude/skills/figsnap` teaches an agent to work out which one it is on:
+
+| | reads | writes | needs |
+| --- | --- | --- | --- |
+| the plugin's Agent column | ✓ | ✓ | nothing |
+| `figsnap-mcp` from a project | ✓ | ✓ | the daemon running |
+| the relay over HTTP | ✓ | — | an account |
 
 ## Develop
 

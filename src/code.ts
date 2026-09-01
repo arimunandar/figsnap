@@ -2417,6 +2417,29 @@ async function handleRequest(command: string, params: Record<string, unknown>): 
       const selection = figma.currentPage.selection
       return { page: figma.currentPage.name, rows: selection.map(toRow) }
     }
+    // Driving the canvas rather than reading it, but not editing it: nothing in
+    // the file changes, so this is not behind the Edits gate and leaves no undo
+    // step. Selecting and scrolling are one act to a person — an agent that has
+    // found the CTA is trying to point at it — so they happen together, exactly
+    // as they do when the panel's own tree is clicked.
+    case 'set_selection': {
+      const ids = Array.isArray(params.nodeIds)
+        ? params.nodeIds.map(String).filter((id) => id !== '')
+        : typeof params.nodeId === 'string' && params.nodeId !== ''
+          ? [params.nodeId]
+          : []
+      if (ids.length === 0) throw new Error('Pass nodeId, or nodeIds as a non-empty array of node ids.')
+      const nodes: SceneNode[] = []
+      for (const id of ids.slice(0, MAX_BATCH)) nodes.push(await resolveScene(id))
+      figma.currentPage.selection = nodes
+      figma.viewport.scrollAndZoomIntoView(nodes)
+      // The panel is told the way a click on the canvas would tell it. Figma
+      // does not promise `selectionchange` for a programmatic assignment, and a
+      // panel still previewing the previous layer reads as a selection that
+      // did not take.
+      scheduleSelectionExtract()
+      return { page: figma.currentPage.name, rows: nodes.map(toRow) }
+    }
     case 'extract_urls': {
       const text = typeof params.urls === 'string' ? params.urls : Array.isArray(params.urls) ? params.urls.join('\n') : String(params.url ?? '')
       return { results: await extractBatch(urlEntries(text), optionsFrom(params)) }

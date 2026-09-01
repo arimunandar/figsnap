@@ -1,14 +1,13 @@
 // The relay this build talks to.
 //
 // Both sandboxes need it — the main thread for a fresh install's default, the
-// UI to label it — so it lives here rather than being written out twice.
+// UI to label it — so it lives here rather than being written out twice. The
+// host itself comes from shared/relay.mjs, which the agent daemon reads too:
+// one address, three sandboxes, nothing to keep in step by hand.
 
-/**
- * Change this after deploying your own: `npm run worker:deploy` prints the
- * address. It also has to be added to networkAccess.devAllowedDomains in
- * manifest.json, which Figma caches, so re-import the plugin afterwards.
- */
-export const HOSTED_RELAY_URL = 'wss://figsnap-relay.arimunandar-dev.workers.dev/plugin'
+import { HOSTED_RELAY_HTTP } from '../shared/relay.mjs'
+
+export const HOSTED_RELAY_URL = `${HOSTED_RELAY_HTTP.replace(/^http/, 'ws')}/plugin`
 
 export const DEFAULT_RELAY_URL = HOSTED_RELAY_URL
 
