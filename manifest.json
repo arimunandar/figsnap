@@ -10,7 +10,8 @@
   "documentAccess": "dynamic-page",
   "networkAccess": {
     "allowedDomains": [
-      "none"
+      "wss://figsnap-relay.arimunandar-dev.workers.dev",
+      "https://figsnap-relay.arimunandar-dev.workers.dev"
     ],
     "devAllowedDomains": [
       "wss://figsnap-relay.arimunandar-dev.workers.dev",

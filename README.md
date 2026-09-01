@@ -1,29 +1,131 @@
 # Figsnap
 
-A Figma plugin that lists the current page as a node tree the moment it opens,
-then extracts any node you pick: a PNG render, a React component, a CSS module,
-and plain CSS. Built with TypeScript and bundled with esbuild.
+A Figma plugin that turns any node into a PNG, a React component, a standalone
+HTML page and three flavours of CSS — and a relay so an AI agent can read the
+same designs over HTTP while you work.
+
+- **In Figma**: pick a layer, get code. No account needed for that part.
+- **Over HTTP**: `POST /extract` with a node id or a Figma link, from an agent,
+  a script or CI.
+
+TypeScript, bundled with esbuild. The relay is a Cloudflare Worker.
+
+## Quick start
+
+Requires **Node 20 or newer** and the **Figma desktop app** — plugins in
+development cannot be loaded in the browser.
+
+**1. Clone and build.**
+
+```bash
+git clone https://github.com/arimunandar/figsnap.git && cd figsnap
+npm install
+npm run build
+```
+
+Build at least once before importing: `manifest.json` points at `dist/code.js`
+and `dist/ui.html`, which do not exist until you do.
+
+**2. Point it at a relay.** The committed `manifest.json` and `src/relays.ts`
+point at one deployment, which is not yours. Either
+[run your own](#run-your-own-relay) — a few minutes, and recommended — or leave
+it and share that one.
+
+**3. Import into Figma.** Desktop app → **Plugins → Development → Import plugin
+from manifest** → pick this folder's `manifest.json`.
+
+**4. Run it.** **Plugins → Development → Figsnap**, or `Option-Command-P` to
+re-run the last plugin.
+
+**5. Sign in.** The plugin opens on a sign-in form. Create an account with an
+email and a password; the token it returns is stored for you, the socket
+connects, and the workspace appears. Nothing else to configure.
+
+Pick a layer and you have code. To drive it from outside, copy the token from
+the **Relay** page and see [Sending nodes to an AI agent](#sending-nodes-to-an-ai-agent).
+
+While developing, `npm run watch` rebuilds on save — turn on **Plugins →
+Development → Hot reload plugin** so Figma picks each build up. Manifest changes
+still need a re-import.
+
+## Run your own relay
+
+The relay is what an agent talks to, and what carries your saved set between
+machines. It is a Cloudflare Worker; deploying one takes about two minutes and
+the free tier is ample.
+
+**1. Name it.** In `worker/wrangler.jsonc`, change `name` from `figsnap-relay`
+to something of your own.
+
+**2. Deploy.**
+
+```bash
+npx wrangler login
+npm run worker:deploy      # prints your address
+```
+
+**3. Tell the plugin.** Put the address it printed into `src/relays.ts`:
+
+```ts
+export const HOSTED_RELAY_URL = 'wss://<your-name>.<your-subdomain>.workers.dev/plugin'
+```
+
+**4. Tell Figma.** Figma blocks any address the manifest does not list. Put the
+same host in **both** lists in `manifest.json`:
+
+```json
+"allowedDomains":    ["wss://<host>", "https://<host>"],
+"devAllowedDomains": ["wss://<host>", "https://<host>"]
+```
+
+List the exact host. `wss://*.workers.dev` would let this plugin reach every
+Worker on the internet, not only yours.
+
+**5. Rebuild and re-import.** `npm run build`, then import the manifest again —
+Figma caches it, so a re-import is required for manifest changes.
+
+Then sign in from the plugin. You are the first account on your own relay.
+
+```bash
+npm run worker:check   # validate without deploying
+npm run worker:dev     # real workerd, on localhost
+```
+
+### What it stores
+
+Almost nothing. The socket lives in a Durable Object (`worker/src/room.js`)
+because a Worker cannot hold one between requests, and that object writes
+nothing at all: image URLs re-render through the live socket rather than serving
+a cached copy, so no part of a design is ever at rest.
+
+The one exception is your saved set (`worker/src/library.js`), kept per account
+so it follows you between machines: node ids, layer names, types and folder
+names. No image, no CSS, no geometry — the database could not reconstruct any
+part of a design.
+
+Accounts live in `worker/src/accounts.js`. Passwords are stored as a chained
+PBKDF2 hash, tokens only as a SHA-256 hash, and each account gets its own room,
+so a token reaches the designs of the plugin signed in as that same account and
+nobody else's.
 
 ## What it does
 
-Opening the plugin reads `figma.currentPage.children` and shows them as a tree —
-no selection needed. Rows expand on demand (children are fetched per click, so a
-large file is not walked up front). Clicking a row selects that node on canvas,
-zooms to it, and extracts it. Selecting on canvas works too, debounced by 250ms.
+Opening the plugin reads `figma.currentPage.children` and shows them as a tree,
+three levels deep, with no selection needed. Anything deeper expands on click.
+Clicking a row selects that node on canvas, zooms to it, and extracts it.
+Selecting on canvas works too, debounced by 250ms.
 
-Four tabs for the picked node:
+Five outputs for the picked node:
 
-- **Nodes** — the tree. Name, type, child count.
-- **React** — a `.tsx` component. Frames become `div`s, text becomes `span`s with
-  their content, and nested instances become JSX tags (`<Checkbox size="Large" />`)
-  with import stubs at the top. Component properties on the root become typed
-  props with defaults; variant properties become string-literal unions.
-- **Module CSS** — the same rules with camelCase class names, matching the
-  `className={s.x}` references in the React output.
-- **CSS** — `getCSSAsync()` output with kebab-case classes, indented to mirror the
-  layer tree.
+| Output | What it is |
+| --- | --- |
+| **React** | a `.tsx` component. Frames become `div`s, text becomes `span`s with its content, nested instances become JSX tags (`<Checkbox size="Large" />`) with import stubs. Root component properties become typed props; variants become string-literal unions. |
+| **HTML** | a whole page — styles, markup, icons as inline SVG, images embedded — that opens as the design with no editing |
+| **Module CSS** | the same rules with camelCase classes, matching the `className={s.x}` references |
+| **CSS** | `getCSSAsync()` output, kebab-case, indented to mirror the layer tree |
+| **Figma CSS** | Figma's own *Copy as CSS*, reproduced byte for byte from node properties |
 
-Plus a PNG of the node at 1x–4x, with Copy and Download.
+Plus a PNG at 1×–4×, with Copy and Download.
 
 Toggles:
 
@@ -121,27 +223,6 @@ highlighting — five tabs:
 
 The HTTP API has its own browser on the **Relay** page — see *Trying the API*
 below.
-
-## Setup
-
-Requires **Node 20 or newer** and the **Figma desktop app** — local plugins cannot
-be loaded in the browser.
-
-```bash
-git clone <this repo> && cd figma-plugin
-npm install
-npm run build
-```
-
-Then in Figma: **Plugins > Development > Import plugin from manifest**, and choose
-this folder's `manifest.json`. Build at least once first, or the manifest points at
-files that do not exist yet.
-
-Run it with **Plugins > Development > Figsnap**, or Option-Command-P to
-re-run the last plugin.
-
-That is the whole setup for the panel. The relay below is only needed if you want
-the HTTP API.
 
 ## The relay
 
@@ -272,6 +353,10 @@ an agent talks to, and what carries a saved set between machines.
 | Developers and agents | panel + HTTP API | the plugin, and an account on the relay |
 | Contributors | the source | this repository |
 
+Licensed MIT — see `LICENSE`. If you fork it, change `HOSTED_RELAY_URL` in
+`src/relays.ts` and the two host lists in `manifest.json` so your build talks to
+your relay rather than someone else's.
+
 ## Publishing the plugin
 
 Two routes, and they differ in one important way.
@@ -292,50 +377,6 @@ saves every designer from cloning, building and importing a manifest.
   address in `allowedDomains` instead.
 
 `id` is assigned by Figma on first publish; the placeholder is correct until then.
-
-## Hosting the relay on Cloudflare
-
-`worker/` is the same relay on Cloudflare, plus the public docs. Deploy it when
-the agent is not on the same machine as Figma — a cloud session, CI, or a
-teammate reading the frame you have selected.
-
-A Worker is stateless, and the relay's job is holding one WebSocket open and
-matching replies to requests, so the socket lives in a **Durable Object**
-(`worker/src/room.js`). It writes nothing to storage: the plugin owns the file and
-the saved set, and images are re-rendered through the live socket rather than
-cached, so no part of a design is ever at rest.
-
-```bash
-npm run worker:check                  # validate without deploying
-npm run worker:dev                    # real workerd, locally
-npx wrangler secret put RELAY_TOKEN   # optional; accounts cover this already
-npm run worker:deploy                 # needs `wrangler login`
-```
-
-Change `name` in `worker/wrangler.jsonc` first. Then point the plugin at it on the
-**Relay** page: `wss://<name>.<your-subdomain>.workers.dev/plugin`, then sign in.
-Setting `HOSTED_RELAY_URL` in `src/relays.ts` makes it the address a fresh install
-opens against.
-
-Three differences from running it locally:
-
-- **A token is mandatory**, and normally comes from an account: sign in from the
-  plugin, or at `/login`. Without one the API answers `401` and only the docs are
-  readable. A shared `RELAY_TOKEN` secret still works for a single-room
-  deployment, but accounts are the normal path.
-- **The relay cannot write files.** A Worker has no filesystem, so installing the
-  Claude Code skill is two `curl` commands into your project — the Relay page
-  prints them with the address filled in.
-- **`manifest.json` must list the address.** Add
-  `wss://<name>.<subdomain>.workers.dev` to `networkAccess.devAllowedDomains`
-  (or `allowedDomains` for a published plugin) and re-import the plugin. List the
-  exact host rather than `wss://*.workers.dev`: a wildcard lets the plugin reach
-  every Worker on the internet, not only yours. The committed manifest points at
-  one deployment, so change it to your own.
-
-Deploying without `RELAY_TOKEN` gives you the docs and the skill files on a public
-URL and nothing else — the API stays shut. `vars.RELAY_BASE` then fills in the
-printed commands, pointing readers at the relay they run themselves.
 
 ## How the two threads talk
 
