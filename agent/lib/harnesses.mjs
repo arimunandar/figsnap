@@ -25,7 +25,21 @@ function defined(entries) {
   return Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined))
 }
 
-const CLAUDE_ACP = { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp'] }
+/**
+ * How an adapter is launched. `npx` so a harness nobody has installed is still
+ * launchable — that is the whole reason an undetected row is listed rather than
+ * hidden.
+ *
+ * `--prefer-offline` because the plain form re-checks the npm registry on every
+ * single session start, and that check is most of what a designer waits through:
+ * measured here, `initialize` took 1.0–4.1s with `-y` alone against 0.5–0.6s
+ * with this flag, which is the difference between Start feeling slow and Start
+ * feeling immediate. The cost is that a cached adapter stops being replaced by a
+ * newer published one; `npm cache clean` or a version bump is the way to move.
+ */
+const adapter = (...args) => ({ command: 'npx', args: ['--prefer-offline', '-y', ...args] })
+
+const CLAUDE_ACP = adapter('@agentclientprotocol/claude-agent-acp')
 
 export const HARNESSES = [
   {
@@ -39,16 +53,14 @@ export const HARNESSES = [
     id: 'codex',
     name: 'Codex',
     cli: 'codex',
-    command: 'npx',
-    args: ['-y', '@agentclientprotocol/codex-acp'],
+    ...adapter('@agentclientprotocol/codex-acp'),
     note: 'Uses your Codex login. Run `codex` once in a terminal first if you have not.',
   },
   {
     id: 'gemini',
     name: 'Gemini CLI',
     cli: 'gemini',
-    command: 'npx',
-    args: ['-y', '@google/gemini-cli', '--acp'],
+    ...adapter('@google/gemini-cli', '--acp'),
     note: 'Uses your Gemini CLI login. Run `gemini` once in a terminal first if you have not.',
   },
   {
