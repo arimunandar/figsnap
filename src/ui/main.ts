@@ -84,6 +84,7 @@ type FromPlugin =
   | { type: 'saved'; folders: FolderCount[]; entries: SavedEntry[] }
   | { type: 'save-result'; added: number; already: number; moved: number; full: number; folder: string }
   | { type: 'thumb'; id: string | null; png: Uint8Array | null }
+  | { type: 'sync'; fileId: string; folders: string[]; entries: SavedEntry[]; updatedAt: number }
   | { type: 'tree'; page: string; rows: IncomingRow[]; truncated: boolean }
   | { type: 'children'; parentId: string; rows: IncomingRow[]; truncated: boolean }
   | { type: 'busy' }
@@ -254,6 +255,79 @@ const bridge = createBridge({
 
 function setStatus(text: string) {
   status.textContent = text
+}
+
+// ---------------------------------------------------------------------- sync
+//
+// The saved set lives in clientStorage, which is per machine. A hosted relay
+// keeps a copy per account, so the set follows you between machines; the main
+// thread cannot reach the network, so the reconciling happens here.
+//
+// Last write wins at the level of the whole set. Two devices editing the same
+// file's set at once is rare, and merging entry by entry would surprise more
+// often than it would save.
+
+const SYNC_DEBOUNCE_MS = 800
+
+type SyncState = { fileId: string; folders: string[]; entries: SavedEntry[]; updatedAt: number }
+
+let syncTimer: number | undefined
+let syncPending: SyncState | null = null
+let syncing = false
+
+/** Only a relay with accounts has anywhere to keep it. */
+function canSync(): boolean {
+  return relayHasAccounts() && relayToken !== '' && session === 'signed-in'
+}
+
+function scheduleSync(state: SyncState) {
+  syncPending = state
+  if (!canSync()) return
+  if (syncTimer !== undefined) clearTimeout(syncTimer)
+  syncTimer = setTimeout(() => void runSync(), SYNC_DEBOUNCE_MS)
+}
+
+async function runSync(): Promise<void> {
+  const state = syncPending
+  if (!state || syncing || !canSync()) return
+  syncing = true
+  const path = `${httpBase()}/library/${encodeURIComponent(state.fileId)}`
+
+  try {
+    const response = await fetch(path, { headers: authHeaders() })
+    if (response.status === 401) {
+      sessionExpired('The relay rejected that token. Sign in again.')
+      return
+    }
+    // A relay without accounts answers 501; there is nothing to sync with.
+    if (response.status === 501 || !response.ok) return
+
+    const remote = (await response.json()) as {
+      folders: string[]
+      entries: SavedEntry[]
+      updatedAt: number
+      known: boolean
+    }
+
+    if (remote.known && remote.updatedAt > state.updatedAt) {
+      post({ type: 'sync-apply', folders: remote.folders, entries: remote.entries, updatedAt: remote.updatedAt })
+      toast('Saved set synced from your account')
+      return
+    }
+    // Nothing newer there, so this machine's copy is the one to keep.
+    if (remote.known && remote.updatedAt === state.updatedAt) return
+
+    await fetch(path, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ folders: state.folders, entries: state.entries, updatedAt: state.updatedAt }),
+    })
+  } catch {
+    // Offline, or a relay that does not do this. The set still works locally and
+    // the next change tries again.
+  } finally {
+    syncing = false
+  }
 }
 
 // --------------------------------------------------------------------- toast
@@ -1399,6 +1473,16 @@ async function verifySession(): Promise<void> {
       return
     }
     if (!response.ok) return
+
+    // A token this relay recognises is proof that it has accounts — better proof
+    // than the address, which only ever was a guess. Without this a hosted relay
+    // reached over plain ws:// would look account-less to everything that asks.
+    if (relayAccounts !== 'yes') {
+      relayAccounts = 'yes'
+      if (view === 'relay') refreshRelayPage()
+      if (syncPending) scheduleSync(syncPending)
+    }
+
     const account = (await response.json()) as { email?: string }
     if (typeof account.email === 'string' && account.email !== relayEmail) {
       // Stored so the next open can name the account without a request.
@@ -1588,6 +1672,8 @@ function applySettings(first: boolean, changed: boolean) {
     if (first || changed) {
       connect(first)
       void verifySession()
+      // A set that was waiting for an account can go now.
+      if (syncPending) scheduleSync(syncPending)
     }
     if (view === 'auth' && !authBusy) setView('work')
     return
@@ -2229,6 +2315,14 @@ window.addEventListener('message', (event: MessageEvent) => {
     }
     case 'thumb':
       showThumb(msg.png)
+      break
+    case 'sync':
+      scheduleSync({
+        fileId: msg.fileId,
+        folders: msg.folders,
+        entries: msg.entries,
+        updatedAt: msg.updatedAt,
+      })
       break
     case 'save-result': {
       const said = saveMessage(msg)

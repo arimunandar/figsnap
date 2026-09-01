@@ -448,6 +448,15 @@ const server = createServer(async (req, res) => {
       return
     }
 
+    // Syncing belongs to an account, and a local relay has none: it binds to
+    // 127.0.0.1, where the set already lives in this machine's Figma.
+    if (url.pathname === '/library' || url.pathname.startsWith('/library/')) {
+      sendJson(res, 501, {
+        error: 'Syncing the saved set needs an account. Sign in to a hosted relay for that.',
+      })
+      return
+    }
+
     if (url.pathname === '/folders') {
       if (req.method === 'GET') {
         sendJson(res, 200, await request('list_folders'))

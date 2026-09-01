@@ -70,6 +70,7 @@ type ToUI =
   | { type: 'saved'; folders: FolderCount[]; entries: SavedEntry[] }
   | { type: 'save-result'; added: number; already: number; moved: number; full: number; folder: string }
   | { type: 'thumb'; id: string | null; png: Uint8Array | null }
+  | { type: 'sync'; fileId: string; folders: string[]; entries: SavedEntry[]; updatedAt: number }
   | { type: 'settings'; url: string; token: string; email: string; profiles: Profile[] }
 
 type FromUI =
@@ -90,6 +91,7 @@ type FromUI =
   | { type: 'rename-folder'; from: string; to: string }
   | { type: 'delete-folder'; name: string; deleteEntries?: boolean }
   | { type: 'move-saved'; ids: string[]; folder: string }
+  | { type: 'sync-apply'; folders: string[]; entries: SavedEntry[]; updatedAt: number }
   | { type: 'refresh-saved' }
   | { type: 'resize'; width: number; height: number }
   | { type: 'minimise'; on: boolean }
@@ -1126,6 +1128,9 @@ const STORAGE_KEY = `saved:${figma.root.id}`
 // document id: one relay serves every file this user opens.
 const SETTINGS_KEY = 'relay-settings'
 let saved: SavedEntry[] = []
+// When this set last changed, by this machine's clock. It is what decides which
+// side wins when two devices have both edited — see the sync messages below.
+let savedUpdatedAt = 0
 // Held separately from the entries so an empty folder survives: you can make one
 // before there is anything to put in it, and emptying one does not delete it.
 let folders: string[] = []
@@ -1215,10 +1220,12 @@ async function loadSaved(): Promise<void> {
     if (Array.isArray(stored)) {
       saved = (stored as SavedEntry[]).map((entry) => ({ ...entry, folder: '' }))
       folders = []
+      savedUpdatedAt = 0
       return
     }
     if (stored && typeof stored === 'object') {
-      const store = stored as { folders?: unknown; entries?: unknown }
+      const store = stored as { folders?: unknown; entries?: unknown; updatedAt?: unknown }
+      savedUpdatedAt = typeof store.updatedAt === 'number' ? store.updatedAt : 0
       saved = Array.isArray(store.entries)
         ? (store.entries as SavedEntry[]).map((entry) => ({
             ...entry,
@@ -1233,14 +1240,27 @@ async function loadSaved(): Promise<void> {
   }
   saved = []
   folders = []
+  savedUpdatedAt = 0
 }
 
-async function persistSaved(): Promise<void> {
+/**
+ * The set lives in clientStorage, which is per machine. Asking the panel to sync
+ * after every change is what makes it follow an account between machines — the
+ * main thread has no network, so the panel does the talking.
+ */
+function requestSync(): void {
+  send({ type: 'sync', fileId: figma.root.id, folders, entries: saved, updatedAt: savedUpdatedAt })
+}
+
+async function persistSaved(options: { stamp?: number; sync?: boolean } = {}): Promise<void> {
+  savedUpdatedAt = options.stamp ?? Date.now()
   try {
-    await figma.clientStorage.setAsync(STORAGE_KEY, { folders, entries: saved })
+    await figma.clientStorage.setAsync(STORAGE_KEY, { folders, entries: saved, updatedAt: savedUpdatedAt })
   } catch (error) {
     send({ type: 'error', message: `Could not save: ${error instanceof Error ? error.message : String(error)}` })
   }
+  // Applying what the relay just sent must not bounce straight back to it.
+  if (options.sync !== false) requestSync()
 }
 
 // -------------------------------------------------------------- folders
@@ -1644,7 +1664,11 @@ figma.ui.onmessage = (msg: FromUI) => {
       scheduleSelectionExtract()
       loadSaved()
         .then(refreshSaved)
-        .then(sendSaved)
+        .then(() => {
+          sendSaved()
+          // Opened on another machine since? This is where that is settled.
+          requestSync()
+        })
       break
     case 'save-selection':
       addSaved(figma.currentPage.selection, msg.folder ?? '')
@@ -1667,6 +1691,17 @@ figma.ui.onmessage = (msg: FromUI) => {
     case 'move-saved':
       moveSaved(msg.ids, msg.folder).then(sendSaved, reportFailure)
       break
+    case 'sync-apply': {
+      // The relay's copy was newer, so it replaces this machine's without
+      // being written back — the stamp travels with it.
+      folders = msg.folders
+      saved = msg.entries
+      persistSaved({ stamp: msg.updatedAt, sync: false })
+        .then(refreshSaved)
+        .then(sendSaved)
+        .catch(reportFailure)
+      break
+    }
     case 'unsave':
       removeSaved(msg.ids).then(sendSaved)
       break

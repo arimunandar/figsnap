@@ -12,7 +12,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = 8792
 const worker = spawn(
   'npx',
-  ['wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--port', String(PORT)],
+  ['wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--port', String(PORT), '--persist-to', `.wrangler/test-${PORT}`],
   { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] },
 )
 worker.stdout.on('data', () => {})
@@ -133,6 +133,63 @@ const bobWrite = await fetch(`${BASE}/saved`, {
   body: JSON.stringify({ selection: true }),
 })
 check('nor add to it', bobWrite.status === 503, `status ${bobWrite.status}`)
+
+// The saved set follows an account between machines, and is the one thing the
+// relay keeps. It has to answer whether or not a plugin is connected — the whole
+// point is the other machine, where nothing is open.
+const FILE = 'doc-abc'
+const shelfPath = `${BASE}/library/${FILE}`
+const emptyShelf = await (await fetch(shelfPath, { headers: { 'x-relay-token': signedIn.token } })).json()
+check('a file nobody has synced is empty, not an error', emptyShelf.known === false && emptyShelf.entries.length === 0)
+
+const put = (token, body) =>
+  fetch(shelfPath, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-relay-token': token },
+    body: JSON.stringify(body),
+  })
+
+const first = await (await put(signedIn.token, {
+  folders: ['Checkout'],
+  entries: [{ id: '1:1', name: 'Alpha', type: 'FRAME', addedAt: 1, folder: 'Checkout' }],
+  updatedAt: 1000,
+})).json()
+check('a set can be stored', first.stored === true && first.updatedAt === 1000)
+
+const back = await (await fetch(shelfPath, { headers: { 'x-relay-token': signedIn.token } })).json()
+check('and read back on another device', back.known === true && back.entries[0].name === 'Alpha')
+check('with its folders', back.folders.length === 1 && back.folders[0] === 'Checkout')
+
+// Last write wins, and an older write loses rather than clobbering.
+const newer = await (await put(signedIn.token, { folders: [], entries: [], updatedAt: 2000 })).json()
+check('a newer write replaces it', newer.stored === true && newer.entries.length === 0)
+const stale = await (await put(signedIn.token, {
+  folders: [],
+  entries: [{ id: '9:9', name: 'Stale', type: 'FRAME', addedAt: 1, folder: '' }],
+  updatedAt: 1500,
+})).json()
+check('an older one is refused, not silently applied', stale.stored === false && stale.updatedAt === 2000)
+
+// The same boundary as the rooms: an account's set is its own.
+const bobShelf = await fetch(shelfPath, { headers: { 'x-relay-token': bobRegistered.token } })
+const bobBody = await bobShelf.json()
+check('another account sees its own empty shelf, not this one',
+  bobShelf.status === 200 && bobBody.known === false, JSON.stringify(bobBody).slice(0, 60))
+await put(bobRegistered.token, { folders: [], entries: [{ id: '7:7', name: "Bob's", type: 'FRAME', addedAt: 1, folder: '' }], updatedAt: 3000 })
+const aliceAgain = await (await fetch(shelfPath, { headers: { 'x-relay-token': signedIn.token } })).json()
+check('and writing to it does not touch this one', aliceAgain.entries.length === 0)
+
+const anon = await fetch(shelfPath)
+check('no token reaches no shelf at all', anon.status === 401)
+
+const listed = await (await fetch(`${BASE}/library`, { headers: { 'x-relay-token': signedIn.token } })).json()
+check('an account can see which files it has synced',
+  listed.files.some((file) => file.fileId === FILE), JSON.stringify(listed.files).slice(0, 80))
+
+const forgotten = await fetch(shelfPath, { method: 'DELETE', headers: { 'x-relay-token': signedIn.token } })
+check('and forget one', forgotten.status === 200)
+const gone = await (await fetch(shelfPath, { headers: { 'x-relay-token': signedIn.token } })).json()
+check('which really removes it', gone.known === false)
 
 // Revocation.
 const revoked = await post('/auth/revoke', {}, { 'x-relay-token': registered.token })

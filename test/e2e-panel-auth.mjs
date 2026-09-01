@@ -26,7 +26,7 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`)
 }
 
-const worker = spawn('npx', ['wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--port', String(PORT)], {
+const worker = spawn('npx', ['wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--port', String(PORT), '--persist-to', `.wrangler/test-${PORT}`], {
   cwd: root,
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -67,16 +67,17 @@ function answer(command) {
   return { ok: true }
 }
 
-function until(condition, timeoutMs = 15_000, label = 'condition') {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs
-    const timer = setInterval(() => {
-      let ok = false
-      try { ok = condition() } catch { ok = false }
-      if (ok) { clearInterval(timer); resolve(true) }
-      else if (Date.now() > deadline) { clearInterval(timer); reject(new Error(`timed out waiting for ${label}`)) }
-    }, 50)
-  })
+// Awaits the condition: an async one returns a promise, which is always truthy,
+// so a non-awaiting poll would report success on its first tick.
+async function until(condition, timeoutMs = 15_000, label = 'condition') {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    let ok = false
+    try { ok = await condition() } catch { ok = false }
+    if (ok) return true
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error(`timed out waiting for ${label}`)
 }
 
 /**
@@ -88,6 +89,7 @@ function until(condition, timeoutMs = 15_000, label = 'condition') {
 function openPanel(stored) {
   const settings = { url: '', token: '', email: '', profiles: [], ...stored }
   const seen = []
+  const applied = []
 
   const dom = new JSDOM(html, {
     url: 'https://www.figma.com/',
@@ -120,6 +122,9 @@ function openPanel(stored) {
         settings.email = ''
         send({ type: 'settings', ...settings })
         break
+      case 'sync-apply':
+        applied.push(message)
+        break
       case 'req': {
         seen.push(message.command)
         send({ type: 'res', id: message.id, ok: true, data: answer(message.command) })
@@ -133,7 +138,7 @@ function openPanel(stored) {
   const id = (name) => window.document.getElementById(name)
   const workspace = () => window.document.querySelector('.body')
   const submit = () => id('auth-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
-  return { dom, window, settings, seen, id, workspace, submit }
+  return { dom, window, settings, seen, applied, id, workspace, submit, send }
 }
 
 // ------------------------------------------------------ opening with no session
@@ -271,10 +276,68 @@ check('a long generated string is summarised, not dumped',
   shown.split('\n').find((line) => line.includes('tsx')))
 check('the png reference survives', shown.includes('/assets/'))
 
+// ------------------------------------------------------- syncing the set
+//
+// The saved set lives in clientStorage, which is per machine. The panel is what
+// carries it to the account, so this drives the real loop against a real store.
+
+const FILE = `panel-file-${unique}`
+const shelf = () =>
+  fetch(`${BASE}/library/${FILE}`, { headers: { 'x-relay-token': token } }).then((r) => r.json())
+
+resumed.send({
+  type: 'sync',
+  fileId: FILE,
+  folders: ['Checkout'],
+  entries: [{ id: '1:1', name: 'Alpha', type: 'FRAME', addedAt: 1, folder: 'Checkout' }],
+  updatedAt: 5000,
+})
+await until(async () => (await shelf()).known === true, 20_000, 'the set to reach the account')
+const stored = await shelf()
+check('the panel pushes the set to the account',
+  stored.entries[0]?.name === 'Alpha' && stored.folders[0] === 'Checkout')
+check('with the stamp it was given', stored.updatedAt === 5000)
+
+// Now the other machine: a newer set arrives at the account directly.
+await fetch(`${BASE}/library/${FILE}`, {
+  method: 'PUT',
+  headers: { 'content-type': 'application/json', 'x-relay-token': token },
+  body: JSON.stringify({
+    folders: ['Checkout', 'Onboarding'],
+    entries: [{ id: '2:2', name: 'From the laptop', type: 'FRAME', addedAt: 2, folder: 'Onboarding' }],
+    updatedAt: 9000,
+  }),
+})
+
+resumed.applied.length = 0
+resumed.send({
+  type: 'sync',
+  fileId: FILE,
+  folders: ['Checkout'],
+  entries: [{ id: '1:1', name: 'Alpha', type: 'FRAME', addedAt: 1, folder: 'Checkout' }],
+  updatedAt: 5000,
+})
+await until(() => resumed.applied.length > 0, 20_000, 'the newer set to come back')
+const pulled = resumed.applied[0]
+check('a newer set on the account replaces this machine\'s',
+  pulled.entries[0]?.name === 'From the laptop' && pulled.updatedAt === 9000)
+check('folders come with it', pulled.folders.length === 2)
+check('and the panel says so', resumed.id('toast').textContent.includes('synced'))
+
+// An older local set must not clobber the newer one it just pulled.
+resumed.send({ type: 'sync', fileId: FILE, folders: [], entries: [], updatedAt: 100 })
+await new Promise((resolve) => setTimeout(resolve, 2500))
+const untouched = await shelf()
+check('a stale push does not overwrite the account',
+  untouched.updatedAt === 9000 && untouched.entries.length === 1, `updatedAt ${untouched.updatedAt}`)
+
 // Signing out revokes the token and the gate closes behind it.
 resumed.id('page-signout').click()
-await until(() => resumed.id('auth-page').hidden === false, 10_000, 'the gate to reopen')
-check('signing out reopens the gate', resumed.settings.token === '' && resumed.id('topbar').hidden === true)
+// The gate opens synchronously; the stored token clears once the main thread has
+// handled the message, so that is the thing to wait for.
+await until(() => resumed.settings.token === '', 10_000, 'the token to be dropped')
+check('signing out reopens the gate',
+  resumed.id('auth-page').hidden === false && resumed.id('topbar').hidden === true)
 await new Promise((resolve) => setTimeout(resolve, 500))
 const afterSignOut = await fetch(`${BASE}/auth/me`, { headers: { 'x-relay-token': token } })
 check('signing out revokes the token on the relay', afterSignOut.status === 401, `status ${afterSignOut.status}`)

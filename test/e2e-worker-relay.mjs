@@ -12,7 +12,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = 8791
 const worker = spawn(
   'npx',
-  ['wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--port', String(PORT), '--var', 'RELAY_TOKEN:devtoken'],
+  ['wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--port', String(PORT), '--var', 'RELAY_TOKEN:devtoken', '--persist-to', `.wrangler/test-${PORT}`],
   { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] },
 )
 worker.stdout.on('data', () => {})

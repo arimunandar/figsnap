@@ -26,6 +26,7 @@ import { authPage } from './auth-page.js'
 
 export { Room } from './room.js'
 export { Accounts } from './accounts.js'
+export { Library } from './library.js'
 
 const LOCAL_ONLY = {
   '/fs': 'Browsing directories needs a filesystem. Run the relay locally for that.',
@@ -51,6 +52,11 @@ function presentedToken(request, url) {
  * own room and nothing else, so one person's token cannot read another's designs.
  * The shared RELAY_TOKEN, when set, keeps working and maps to a single room.
  */
+/** An account's own saved-set store, reachable only with that account's token. */
+function libraryFor(env, room) {
+  return env.LIBRARY.getByName(room)
+}
+
 async function authorise(request, env) {
   const url = new URL(request.url)
   const token = presentedToken(request, url)
@@ -130,6 +136,28 @@ function matchApi(path, method) {
   }
 
   if (path === '/folders' && method === 'GET') return async (stub) => json(await stub.command('list_folders'))
+
+  // The library is the account's, not the room's: it answers whether or not a
+  // plugin is connected, which is the point of it following you between devices.
+  const library = path.match(/^\/library(?:\/(.+))?$/)
+  if (library) {
+    const fileId = library[1] ? decodeURIComponent(library[1]) : null
+    if (method === 'GET' && fileId === null) {
+      return async (_stub, _request, _url, _base, shelf) => json({ files: await shelf.files() })
+    }
+    if (method === 'GET') {
+      return async (_stub, _request, _url, _base, shelf) => json(await shelf.read(fileId))
+    }
+    if (method === 'PUT' && fileId !== null) {
+      return async (_stub, request, _url, _base, shelf) => {
+        const body = await readBody(request)
+        return json(await shelf.write(fileId, body.folders, body.entries, body.updatedAt))
+      }
+    }
+    if (method === 'DELETE' && fileId !== null) {
+      return async (_stub, _request, _url, _base, shelf) => json(await shelf.forget(fileId))
+    }
+  }
 
   if (path === '/folders' && method === 'POST') {
     return async (stub, request) => {
@@ -393,7 +421,7 @@ export default {
       const auth = await authorise(request, env)
       if (auth.denied) return auth.denied
       try {
-        return await api(roomFor(env, auth.room), request, url, origin(url))
+        return await api(roomFor(env, auth.room), request, url, origin(url), libraryFor(env, auth.room))
       } catch (error) {
         return failed(error)
       }
@@ -450,7 +478,8 @@ export default {
           '/auth/pair/start', '/auth/pair/claim', '/auth/pair/status',
           '/docs', '/docs.md', '/docs.json', '/skill',
           '/health', '/tree', '/children/:id', '/selection', '/extract', '/resolve',
-          '/saved', '/saved/move', '/folders', '/assets/:nodeId@2x.png', '/events',
+          '/saved', '/saved/move', '/folders', '/library', '/library/:fileId',
+          '/assets/:nodeId@2x.png', '/events',
         ],
         note: '/fs and /skill/install need a filesystem and are local-only.',
       },

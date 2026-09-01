@@ -7,12 +7,15 @@
   "durable_objects": {
     "bindings": [
       { "name": "ROOM", "class_name": "Room" },
-      { "name": "ACCOUNTS", "class_name": "Accounts" }
+      { "name": "ACCOUNTS", "class_name": "Accounts" },
+      { "name": "LIBRARY", "class_name": "Library" }
     ]
   },
-  // Room writes nothing; Accounts is the only thing here that persists.
+  // Room writes nothing. Accounts holds credentials; Library holds each
+  // account's saved set, which is the only thing about a design kept anywhere.
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Room"] },
-    { "tag": "v2", "new_sqlite_classes": ["Accounts"] }
+    { "tag": "v2", "new_sqlite_classes": ["Accounts"] },
+    { "tag": "v3", "new_sqlite_classes": ["Library"] }
   ]
 }
