@@ -100,9 +100,11 @@ await new Promise((resolve, reject) => {
 })
 socket.addEventListener('message', (event) => {
   const message = JSON.parse(event.data)
-  if (message.kind === 'request') {
-    socket.send(JSON.stringify({ kind: 'response', id: message.id, ok: true, data: { page: 'Alice page', rows: [] } }))
-  }
+  if (message.kind !== 'request') return
+  const data = message.command === 'list_saved'
+    ? { folders: [{ name: '', count: 1 }], entries: [{ id: '1:1', name: "Alice's private frame", type: 'FRAME', folder: '' }] }
+    : { page: 'Alice page', rows: [] }
+  socket.send(JSON.stringify({ kind: 'response', id: message.id, ok: true, data }))
 })
 await new Promise((resolve) => setTimeout(resolve, 500))
 
@@ -112,6 +114,25 @@ const bobTree = await fetch(`${BASE}/tree`, { headers: { 'x-relay-token': bobReg
 check('another account cannot reach it', bobTree.status === 503, `status ${bobTree.status}`)
 const noToken = await fetch(`${BASE}/tree`)
 check('no token is refused with a pointer to /login', noToken.status === 401 && (await noToken.json()).error.includes('/login'))
+
+// The saved set is the one thing a person curates by hand, so it is worth
+// asserting on its own rather than trusting that /tree standing in for it is
+// enough: a colleague with their own account must reach their own plugin, and
+// through it their own clientStorage, never someone else's.
+const aliceSaved = await fetch(`${BASE}/saved`, { headers: { 'x-relay-token': signedIn.token } })
+const aliceEntries = (await aliceSaved.json()).entries
+check('own token reads own saved set',
+  aliceSaved.status === 200 && aliceEntries[0].name === "Alice's private frame")
+const bobSaved = await fetch(`${BASE}/saved`, { headers: { 'x-relay-token': bobRegistered.token } })
+check('another account cannot read it', bobSaved.status === 503, `status ${bobSaved.status}`)
+const bobFolders = await fetch(`${BASE}/folders`, { headers: { 'x-relay-token': bobRegistered.token } })
+check('nor the folders it is filed under', bobFolders.status === 503, `status ${bobFolders.status}`)
+const bobWrite = await fetch(`${BASE}/saved`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', 'x-relay-token': bobRegistered.token },
+  body: JSON.stringify({ selection: true }),
+})
+check('nor add to it', bobWrite.status === 503, `status ${bobWrite.status}`)
 
 // Revocation.
 const revoked = await post('/auth/revoke', {}, { 'x-relay-token': registered.token })
