@@ -227,6 +227,15 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
       },
     },
     ui: { onmessage: null, postMessage: (message) => toPanel(message), resize() {} },
+    // Driving the canvas. Recorded rather than ignored: "the agent found it"
+    // and "the designer can see it" are different claims, and this is the only
+    // evidence for the second.
+    viewport: {
+      framed: [],
+      scrollAndZoomIntoView(nodes) {
+        figma.viewport.framed.push(nodes.map((node) => node.id))
+      },
+    },
     showUI() {},
     on() {},
     // The write side of the API. `commitUndo` is what puts a plugin's changes in

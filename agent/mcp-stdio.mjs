@@ -3,6 +3,8 @@
 //
 // ACP gives a chat. MCP gives hands. Every tool here proxies to the daemon over
 // loopback HTTP, which forwards it down the panel's WebSocket into `figma.*`.
+// Resources ride the same route, for the handful of things a client would rather
+// `@`-mention than call a tool for.
 //
 // Two callers, one binary. The daemon spawns this for the harness it launched,
 // passing the address and token in the environment. And anything else that
@@ -22,7 +24,13 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import {
+  CallToolRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -45,7 +53,9 @@ const TOKEN = await resolveToken()
 
 const server = new Server(
   { name: 'figsnap', version: '0.1.0' },
-  { capabilities: { tools: {} } },
+  // Resources as well as tools: a client that can @-mention context should not
+  // have to spend a tool call to get the obvious things. See RESOURCES below.
+  { capabilities: { tools: {}, resources: {} } },
 )
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolManifest() }))
@@ -60,43 +70,127 @@ function unreachable(error) {
     : `The Figsnap daemon is not answering: ${why}`
 }
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+/**
+ * Every call — a tool the agent chose, or a resource a client is reading —
+ * leaves through the one `POST /tool` route. Answering with `{error}` rather
+ * than throwing, because which of the three things went wrong is the useful
+ * part and each has a different fix.
+ */
+async function callTool(name, args) {
   let answer
   try {
     const response = await fetch(`${BASE}/tool`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-figsnap-token': TOKEN },
-      body: JSON.stringify({ name: request.params.name, arguments: request.params.arguments ?? {} }),
+      body: JSON.stringify({ name, arguments: args ?? {} }),
     })
     answer = await response.json()
   } catch (error) {
     // The daemon going away mid-run is the common case: the designer quit it,
     // or the machine slept. Say so rather than returning a protocol error, so
     // the agent can tell the user instead of retrying into the void.
-    return { isError: true, content: [{ type: 'text', text: unreachable(error) }] }
+    return { error: unreachable(error) }
   }
 
   if (answer.error === 'Bad or missing agent token') {
     return {
-      isError: true,
-      content: [
-        {
-          type: 'text',
-          text:
-            'The Figsnap daemon rejected the token. It writes one to ~/.figsnap/agent-token; ' +
-            'set FIGSNAP_AGENT_TOKEN to that value, or run `npx figsnap-agent` to create it.',
-        },
-      ],
+      error:
+        'The Figsnap daemon rejected the token. It writes one to ~/.figsnap/agent-token; ' +
+        'set FIGSNAP_AGENT_TOKEN to that value, or run `npx figsnap-agent` to create it.',
+    }
+  }
+  // The third way this fails, and the one that used to arrive as a timeout: the
+  // daemon is up and paired, but the plugin is closed, so there is no `figma.*`
+  // on the other end. A daemon of this vintage says so itself; an older one
+  // says only that a panel is not connected, which is not something a user can
+  // act on without knowing what a panel is.
+  if (typeof answer.error === 'string' && answer.error.includes('panel is not connected')) {
+    return {
+      error:
+        'The Figsnap plugin is not open in Figma. The daemon is running, but the Figma Plugin API only exists ' +
+        'while the plugin does. Ask the designer to open the file and run Plugins > Development > Figsnap.',
     }
   }
 
-  if (answer.error !== undefined) {
-    return { isError: true, content: [{ type: 'text', text: String(answer.error) }] }
-  }
-  if (!Array.isArray(answer.content)) {
-    return { isError: true, content: [{ type: 'text', text: 'The Figsnap daemon answered with no content.' }] }
-  }
+  if (answer.error !== undefined) return { error: String(answer.error) }
+  if (!Array.isArray(answer.content)) return { error: 'The Figsnap daemon answered with no content.' }
   return { content: answer.content }
+}
+
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const answer = await callTool(request.params.name, request.params.arguments ?? {})
+  return answer.error === undefined
+    ? { content: answer.content }
+    : { isError: true, content: [{ type: 'text', text: answer.error }] }
+})
+
+// ------------------------------------------------------------------ resources
+//
+// The same designs, addressable rather than called for. A client that can
+// @-mention a resource should not have to spend a turn deciding to call a tool
+// for the three things a question about a Figma file almost always needs: what
+// is selected, what is on the page, and what the design system holds.
+//
+// Each one is a tool that already exists, so there is no second path into the
+// daemon and nothing here can drift from what the tools answer.
+
+const RESOURCES = [
+  {
+    uri: 'figma://selection',
+    name: 'Selection',
+    description: 'Every layer the designer has selected right now, extracted as HTML and figmaCss.',
+    mimeType: 'application/json',
+    read: () => ['figma_extract', { selection: true }],
+  },
+  {
+    uri: 'figma://page',
+    name: 'Current page',
+    description: 'The layer tree of the page the designer is looking at, three levels deep.',
+    mimeType: 'application/json',
+    read: () => ['figma_get_tree', { depth: 3 }],
+  },
+  {
+    uri: 'figma://library',
+    name: 'Design system',
+    description: 'The components, styles and variables this file has, with their ids.',
+    mimeType: 'application/json',
+    read: () => ['figma_list_library', {}],
+  },
+]
+
+const NODE_TEMPLATE = {
+  uriTemplate: 'figma://node/{nodeId}',
+  name: 'One node',
+  description: 'The extraction of a single layer, by Figma node id — figma://node/21:10314.',
+  mimeType: 'application/json',
+}
+
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  resources: RESOURCES.map(({ uri, name, description, mimeType }) => ({ uri, name, description, mimeType })),
+}))
+
+server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+  resourceTemplates: [NODE_TEMPLATE],
+}))
+
+server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  const uri = String(request.params.uri ?? '')
+  const fixed = RESOURCES.find((resource) => resource.uri === uri)
+  const node = /^figma:\/\/node\/(.+)$/.exec(uri)
+  if (fixed === undefined && node === null) throw new Error(`No Figsnap resource at ${uri}`)
+
+  const [name, args] = fixed !== undefined ? fixed.read() : ['figma_extract', { nodeId: decodeURIComponent(node[1]) }]
+  const answer = await callTool(name, args)
+  // A resource read has no isError, so a failure has to be an error: a client
+  // that pasted the text of a refusal into the prompt as though it were the
+  // design would be worse than one that reported the read failed.
+  if (answer.error !== undefined) throw new Error(answer.error)
+
+  const text = answer.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
+  return { contents: [{ uri, mimeType: fixed?.mimeType ?? NODE_TEMPLATE.mimeType, text }] }
 })
 
 await server.connect(new StdioServerTransport())

@@ -11,13 +11,130 @@
 // refuses every mutating tool until the panel turns writes on, which is a
 // switch the designer holds rather than a prompt the agent can talk past.
 
+import {
+  batchCommand,
+  folderWriteCommand,
+  savedAddCommand,
+  savedDeleteCommand,
+} from '../../shared/shape.mjs'
+
 /** Outputs the plugin can produce, in the order the plugin returns them. */
 export const OUTPUTS = ['png', 'pngData', 'html', 'tsx', 'moduleCss', 'css', 'figmaCss']
+
+/**
+ * What a *tool* may ask for, which is not the same list.
+ *
+ * `pngData` is the image base64 in the body rather than a reference to it. Over
+ * HTTP that is a real choice: the caller may be a script with nothing able to
+ * fetch a URL later. Over MCP it is never the right answer, because `png` here
+ * comes back as an actual image content block — the client renders it, and it
+ * costs about a thousand tokens where the same picture as base64 text costs
+ * forty. A screen at scale 3 is 141 kB of it, which no tool result can carry.
+ *
+ * So it is not offered, and a caller that asks for it anyway gets `png`.
+ */
+const TOOL_FORMATS = OUTPUTS.filter((name) => name !== 'pngData')
 
 // The whole point of this bridge is that a 167 kB answer is allowed, but an
 // agent that asked for "the button" should still not be handed every
 // representation of it at once. Naming two is a starting point it can widen.
+// Both are text, which is also what makes them safe to multiply by a batch:
+// see `figma_export_png` for a picture, one node at a time.
 const DEFAULT_FORMATS = ['html', 'figmaCss']
+
+/** What the plugin caps a batch at; MAX_BATCH in src/code.ts. */
+const MAX_BATCH = 20
+
+/**
+ * The formats to ask the plugin for. `pngData` is off the schema, but the /tool
+ * route takes a body rather than a validated argument list, so an older client
+ * or a hand-written call can still name it. Answer the question it was really
+ * asking — show me the picture — instead of refusing on a technicality.
+ */
+function toolFormats(formats) {
+  if (!Array.isArray(formats) || formats.length === 0) return DEFAULT_FORMATS
+  const asked = formats.map((name) => (name === 'pngData' ? 'png' : name))
+  return [...new Set(asked)]
+}
+
+/** The nine things a caller can do to the saved set, as one argument. */
+const SAVED_ACTIONS = [
+  'list',
+  'folders',
+  'save',
+  'unsave',
+  'clear',
+  'move',
+  'newFolder',
+  'renameFolder',
+  'deleteFolder',
+]
+
+/**
+ * One `action` on figma_saved, as the command and the body the plugin wants.
+ *
+ * Which command a given body means is already decided in shared/shape.mjs, for
+ * the HTTP relay — `POST /saved` with ids is save_nodes and without them is
+ * save_selection, and so on down. So the action picks a body and those same
+ * functions name the command, rather than a second table saying it again.
+ */
+function savedCall(args) {
+  const action = String(args.action ?? '')
+  const nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(String).filter((id) => id !== '') : []
+  const folder = typeof args.folder === 'string' ? args.folder : undefined
+  const named = () => {
+    const name = typeof args.name === 'string' ? args.name.trim() : ''
+    if (name === '') throw new Error(`${action} needs a folder name.`)
+    return name
+  }
+
+  switch (action) {
+    case 'list':
+      return { command: 'list_saved', params: folder === undefined ? {} : { folder } }
+    case 'folders':
+      return { command: 'list_folders', params: {} }
+    case 'save': {
+      // No ids means "whatever is selected", which is the common case: the
+      // designer has already pointed at the thing worth keeping.
+      const body = {
+        ...(nodeIds.length > 0 ? { nodeIds } : {}),
+        ...(folder === undefined ? {} : { folder }),
+      }
+      return { command: savedAddCommand(body), params: body }
+    }
+    case 'unsave': {
+      if (nodeIds.length === 0) throw new Error('unsave needs nodeIds. To empty a folder use action "clear".')
+      const body = { nodeIds }
+      return { command: savedDeleteCommand(body), params: body }
+    }
+    case 'clear': {
+      // Naming a folder empties that folder and keeps the folder; naming none
+      // empties the whole set.
+      const body = folder === undefined ? { all: true } : { folder }
+      return { command: savedDeleteCommand(body), params: body }
+    }
+    case 'move': {
+      if (nodeIds.length === 0) throw new Error('move needs nodeIds.')
+      if (folder === undefined) throw new Error('move needs a folder. Pass "" to move entries back to the root.')
+      return { command: 'move_saved', params: { nodeIds, folder } }
+    }
+    case 'newFolder': {
+      const body = { name: named() }
+      return { command: folderWriteCommand(body), params: body }
+    }
+    case 'renameFolder': {
+      const from = typeof args.from === 'string' ? args.from : ''
+      const to = typeof args.to === 'string' ? args.to.trim() : ''
+      if (from === '' || to === '') throw new Error('renameFolder needs from and to.')
+      const body = { from, to }
+      return { command: folderWriteCommand(body), params: body }
+    }
+    case 'deleteFolder':
+      return { command: 'delete_folder', params: { name: named(), deleteEntries: args.deleteEntries === true } }
+    default:
+      throw new Error(`Unknown action: ${args.action}. Use one of: ${SAVED_ACTIONS.join(', ')}.`)
+  }
+}
 
 const nodeIdArgument = {
   type: 'string',
@@ -86,18 +203,36 @@ export const TOOLS = [
     name: 'figma_extract',
     title: 'Read a design as code',
     description:
-      'The full extraction of one node: HTML measured against what Figma draws, byte-exact figmaCss, a React component, plain CSS and CSS modules. Images are inlined and icons come out as real SVG, so the HTML stands on its own. This is the tool that answers "what does this design actually say".',
+      'The full extraction of one node: HTML measured against what Figma draws, byte-exact figmaCss, a React component, plain CSS and CSS modules. Images are inlined and icons come out as real SVG, so the HTML stands on its own. This is the tool that answers "what does this design actually say".\n\n' +
+      `Several nodes at once, instead of one call each: nodeIds, urls, selection: true, or saved: true with an optional folder. A batch answers {results:[…]}, one entry per input, each {ok:true,extraction} or {ok:false,error}, so one bad id never sinks the rest. It is capped at ${MAX_BATCH} entries, and no batch returns an image — ask figma_export_png for a picture, a node at a time.`,
     mutates: false,
-    command: 'extract',
+    // One node or twenty is the same question asked at a different width, and
+    // the plugin already answers both — through four different commands. Which
+    // one a body means is decided in shared/shape.mjs for the HTTP relay, so
+    // reuse that rather than writing the branch a second time here.
+    command: (args) => batchCommand(args) ?? 'extract',
     inputSchema: {
       type: 'object',
       properties: {
         nodeId: nodeIdArgument,
         url: { type: 'string', description: 'A Figma link, as an alternative to nodeId.' },
+        nodeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: `Several node ids, extracted in one call. Up to ${MAX_BATCH}.`,
+        },
+        urls: {
+          type: 'array',
+          items: { type: 'string' },
+          description: `Several Figma links, extracted in one call. Up to ${MAX_BATCH}.`,
+        },
+        selection: { type: 'boolean', description: 'Extract every layer the designer has selected, not just the first.' },
+        saved: { type: 'boolean', description: 'Extract the designer’s saved set. Narrow it with folder.' },
+        folder: { type: 'string', description: 'With saved: true, one folder of it. "" is the root.' },
         formats: {
           type: 'array',
-          items: { type: 'string', enum: OUTPUTS },
-          description: `Which representations to return. Default ${DEFAULT_FORMATS.join(' and ')}. "pngData" inlines the image as a data URI and is large; figma_export_png returns the picture itself instead.`,
+          items: { type: 'string', enum: TOOL_FORMATS },
+          description: `Which representations to return. Default ${DEFAULT_FORMATS.join(' and ')}. "png" comes back as a real image you can look at, alongside the text — there is no base64 in the answer, so ask for it freely on a single node. figma_export_png is the same picture with nothing else attached.`,
         },
         topLayerOnly: { type: 'boolean', description: 'Stop at the selected layer rather than walking into it.' },
         inlineInstances: { type: 'boolean', description: 'Expand component instances instead of referencing them.' },
@@ -108,7 +243,10 @@ export const TOOLS = [
     params: (args) => ({
       ...(args.nodeId === undefined ? {} : { nodeId: args.nodeId }),
       ...(args.url === undefined ? {} : { url: args.url }),
-      format: Array.isArray(args.formats) && args.formats.length > 0 ? args.formats : DEFAULT_FORMATS,
+      ...(args.nodeIds === undefined ? {} : { nodeIds: args.nodeIds }),
+      ...(args.urls === undefined ? {} : { urls: args.urls }),
+      ...(args.folder === undefined ? {} : { folder: args.folder }),
+      format: toolFormats(args.formats),
       topLayerOnly: args.topLayerOnly === true,
       inlineInstances: args.inlineInstances === true,
       ...(args.scale === undefined ? {} : { scale: args.scale }),
@@ -163,6 +301,49 @@ export const TOOLS = [
     },
     params: (args) => (args.folder === undefined ? {} : { folder: args.folder }),
   },
+  {
+    name: 'figma_saved',
+    title: 'Curate the saved set',
+    description:
+      'Read and change the designer’s shortlist of nodes in this file, and the folders it is grouped into. One action argument: ' +
+      SAVED_ACTIONS.join(', ') +
+      '.\n\n' +
+      'list — the entries, optionally in one folder. folders — the folders with their counts; "" is the root. ' +
+      'save — add nodeIds, or whatever is selected when you give none. unsave — remove nodeIds. ' +
+      'clear — empty one folder, or the whole set when you name none. move — put nodeIds in folder. ' +
+      'newFolder / renameFolder / deleteFolder — the folders themselves; deleteFolder keeps the entries and returns them to the root unless deleteEntries is true.\n\n' +
+      'This is a bookmark list, not the design: it lives in the plugin’s own storage, so none of it is behind the Edits switch and none of it can be undone with Cmd-Z. Saving what a long job is about is a cheap way to leave the designer something to look at afterwards.',
+    // Nothing here touches the file, so the Edits gate does not apply — but
+    // half of it does write, which is what readOnly says and mutates does not.
+    mutates: false,
+    readOnly: false,
+    command: (args) => savedCall(args).command,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: SAVED_ACTIONS, description: 'Which of the nine.' },
+        nodeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'For save, unsave and move. Omitting them on save means the current selection.',
+        },
+        folder: {
+          type: 'string',
+          description: 'For list, save, clear and move. "" is the root; the folder must already exist for move.',
+        },
+        name: { type: 'string', description: 'For newFolder and deleteFolder.' },
+        from: { type: 'string', description: 'For renameFolder: the folder as it is called now.' },
+        to: { type: 'string', description: 'For renameFolder: what to call it instead.' },
+        deleteEntries: {
+          type: 'boolean',
+          description: 'For deleteFolder: remove what was in it too, rather than returning it to the root.',
+        },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    params: (args) => savedCall(args).params,
+  },
 
   {
     name: 'figma_list_library',
@@ -185,6 +366,33 @@ export const TOOLS = [
     params: (args) => (args.only === undefined ? {} : { only: args.only }),
   },
 
+
+  {
+    name: 'figma_select',
+    title: 'Show it on the canvas',
+    description:
+      'Selects one or more layers and scrolls the canvas to them, so the designer is looking at whatever you are talking about. Use it before describing a node you found by walking the tree — pointing is faster than naming an id — and after an edit, so the change is on screen.\n\n' +
+      'It changes no design data, which is why it works whether or not Edits is on, and why it leaves no undo step. It does move the designer’s viewport, so say what you are showing them.',
+    mutates: false,
+    readOnly: false,
+    command: 'set_selection',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: { type: 'string', description: 'One node to select and scroll to.' },
+        nodeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: `Several, selected together and framed together. Up to ${MAX_BATCH}.`,
+        },
+      },
+      additionalProperties: false,
+    },
+    params: (args) => ({
+      ...(args.nodeId === undefined ? {} : { nodeId: args.nodeId }),
+      ...(args.nodeIds === undefined ? {} : { nodeIds: args.nodeIds }),
+    }),
+  },
 
   // ------------------------------------------------------------------ writes
 
@@ -739,6 +947,9 @@ export function toolManifest() {
     title: tool.title,
     description: tool.description,
     inputSchema: tool.inputSchema,
-    annotations: { readOnlyHint: !tool.mutates, destructiveHint: tool.mutates },
+    // `mutates` is this daemon's gate; `readOnlyHint` is the client's own idea of
+    // what a tool does. They part company on the saved set and on selecting,
+    // which write something without writing to the design.
+    annotations: { readOnlyHint: tool.readOnly ?? !tool.mutates, destructiveHint: tool.mutates },
   }))
 }

@@ -70,6 +70,50 @@ function readBody(req) {
 }
 
 /**
+ * How much base64 may ride inline in a tool result at all.
+ *
+ * `pngData` is off the tool schema — see TOOL_FORMATS in lib/tools.mjs — but the
+ * /tool route takes a body, not a validated argument list, so this is the floor
+ * under it. A screen at scale 3 is ~141 kB of base64, which exceeds what a tool
+ * result may carry: the call is then wasted, and the caller is handed a file to
+ * slice rather than an answer. Below the cap an icon still inlines fine.
+ */
+const MAX_INLINE_BASE64 = 32_000
+
+/** `pngData` as it goes out: the bytes if they are small, a signpost if not. */
+function inlineImage(png) {
+  const bytes = base64Bytes(png)
+  return png.length > MAX_INLINE_BASE64
+    ? {
+        bytes,
+        note:
+          `Too large to inline (${Math.round(bytes / 1024)} kB). Ask for "png" instead — it comes back as a ` +
+          'real image block rather than base64 text — or use figma_export_png, and lower the scale.',
+      }
+    : { dataUri: `data:image/png;base64,${png}`, bytes }
+}
+
+/** The wording for the one thing no amount of plumbing can fix. */
+export const PANEL_CLOSED =
+  'The Figsnap plugin is not open in Figma. The daemon is running, but the Figma Plugin API only exists while ' +
+  'the plugin does — so there is nothing to read until it is open. Ask the designer to open the file and run ' +
+  'Plugins > Development > Figsnap.'
+
+/**
+ * One entry of a batch extraction, with the image handled as it is for a single
+ * node: `png` dropped, `pngData` inlined while it is small enough to read, and
+ * `outputs` left alone as the record of what was asked for.
+ */
+function shapeBatchEntry(entry) {
+  const extraction = entry?.extraction
+  if (extraction === null || typeof extraction !== 'object' || typeof extraction.png !== 'string') return entry
+  const { png, ...rest } = extraction
+  const outputs = Array.isArray(rest.outputs) ? rest.outputs : ['png']
+  if (outputs.includes('pngData')) rest.pngData = inlineImage(png)
+  return { ...entry, extraction: rest }
+}
+
+/**
  * One tool call, from the MCP server through the panel and into `figma.*`.
  *
  * The mutating half is gated here rather than at the plugin, because this is
@@ -77,16 +121,37 @@ function readBody(req) {
  * turned writing on. A harness running without permission prompts still cannot
  * get past it.
  */
-export async function runTool({ plugin, runner, name, args }) {
+export async function runTool({ plugin, runner, account, name, args }) {
   const tool = TOOLS_BY_NAME.get(name)
   if (tool === undefined) throw new Error(`Unknown tool: ${name}`)
-  if (tool.mutates && !runner.writesAllowed()) {
-    throw new Error(
-      'Editing the file is switched off. The designer turns it on with "Allow edits" in the plugin\'s Agent tab.',
-    )
+
+  // Who, before what. Re-read on every call rather than on a timer: it costs one
+  // small file read, it means `figsnap-agent login` in another terminal takes
+  // effect in a running daemon, and it means revoking a token on the relay stops
+  // the tools rather than stopping them at the next restart. The network is only
+  // touched when the last answer has gone stale.
+  if (account !== undefined) {
+    await account.refresh()
+    const refused = account.refuse()
+    if (refused !== null) throw new Error(refused)
   }
 
-  const data = await plugin.request(tool.command, tool.params(args ?? {}))
+  if (tool.mutates && !runner.writesAllowed()) {
+    throw new Error(
+      'Editing the file is switched off. The designer turns it on with "Allow edits" in the plugin\'s Agent tab, ' +
+        'or by starting the daemon with `figsnap-agent --allow-edits`.',
+    )
+  }
+  // The one limit that cannot be engineered around: `figma.*` exists only while
+  // the plugin is running, so a daemon with no panel attached has nothing to
+  // forward to. Saying that costs nothing; the alternative is a 30-second
+  // timeout the caller has to interpret.
+  if (!plugin.connected()) throw new Error(PANEL_CLOSED)
+
+  // A tool that answers several commands names which from its arguments; most
+  // name one and are a plain string.
+  const command = typeof tool.command === 'function' ? tool.command(args ?? {}) : tool.command
+  const data = await plugin.request(command, tool.params(args ?? {}))
 
   if (tool.image === true) {
     if (typeof data?.png !== 'string') throw new Error('The plugin returned no image')
@@ -96,22 +161,30 @@ export async function runTool({ plugin, runner, name, args }) {
   // One export serves both image outputs, so which was asked for is read off
   // `outputs` rather than off the payload. `png` becomes a real image block —
   // a model that can see should be looking at the design, not at base64 in the
-  // middle of a JSON blob. `pngData` stays inline, because asking for it means
-  // wanting the bytes in the answer.
+  // middle of a JSON blob. `pngData` stays inline only while it is small enough
+  // to be worth reading; see inlineImage.
   if (data !== null && typeof data === 'object' && typeof data.png === 'string') {
     const { png, ...rest } = data
     const outputs = Array.isArray(rest.outputs) ? rest.outputs : ['png']
-    if (outputs.includes('pngData')) {
-      rest.pngData = { dataUri: `data:image/png;base64,${png}`, bytes: base64Bytes(png) }
-    }
+    if (outputs.includes('pngData')) rest.pngData = inlineImage(png)
     const text = { type: 'text', text: JSON.stringify(rest, null, 2) }
     return outputs.includes('png') ? [text, { type: 'image', data: png, mimeType: 'image/png' }] : [text]
+  }
+
+  // A batch answers one entry per input, each with an extraction of its own, so
+  // the same rule has to hold per entry: twenty base64 images stringified into
+  // one tool result is not an answer anybody can read. Twenty image blocks are
+  // not much better, which is why a batch never returns one — figma_export_png
+  // is the tool for a picture, and it takes a node at a time.
+  if (Array.isArray(data?.results)) {
+    const results = data.results.map(shapeBatchEntry)
+    return [{ type: 'text', text: JSON.stringify({ ...data, results }, null, 2) }]
   }
 
   return [{ type: 'text', text: JSON.stringify(data, null, 2) }]
 }
 
-export function createHttpHandler({ plugin, runner, token, version }) {
+export function createHttpHandler({ plugin, runner, account, token, version }) {
   return async function handle(req, res) {
     const url = new URL(req.url ?? '/', `http://127.0.0.1`)
     applyCors(req, res)
@@ -142,7 +215,13 @@ export function createHttpHandler({ plugin, runner, token, version }) {
           panelConnected: plugin.connected(),
           pendingRequests: plugin.pendingCount(),
           tokenRequired: token !== '',
-          ...(plugin.authorized(String(supplied)) ? { session: runner.state() } : {}),
+          // Whether an account is needed is not a secret — it is the thing a
+          // caller has to know before it can do anything — so it is on the open
+          // half. Who is signed in is not, and rides with the session.
+          loginRequired: account?.state().required === true,
+          ...(plugin.authorized(String(supplied))
+            ? { session: runner.state(), ...(account === undefined ? {} : { account: account.state() }) }
+            : {}),
         })
         return
       }
@@ -188,7 +267,7 @@ export function createHttpHandler({ plugin, runner, token, version }) {
       if (url.pathname === '/tool' && req.method === 'POST') {
         const body = await readBody(req)
         try {
-          const content = await runTool({ plugin, runner, name: body.name, args: body.arguments })
+          const content = await runTool({ plugin, runner, account, name: body.name, args: body.arguments })
           sendJson(res, 200, { content })
         } catch (error) {
           // A tool that failed is news for the agent, not a broken transport:

@@ -31,7 +31,7 @@ function within(root, path) {
   throw new Error(`Outside the session directory: ${path}`)
 }
 
-export function createRunner({ plugin, log, emit, mcpServers, sessions }) {
+export function createRunner({ plugin, log, emit, mcpServers, sessions, allowEdits = false }) {
   let child = null
   let connection = null
   let sessionId = null
@@ -51,7 +51,13 @@ export function createRunner({ plugin, log, emit, mcpServers, sessions }) {
   // Writes are a switch the designer holds, not a prompt the agent can talk
   // past: a harness told to skip permissions would otherwise reach the canvas
   // unannounced. See `mutates` in lib/tools.mjs.
-  let writes = false
+  //
+  // `figsnap-agent --allow-edits` seeds it on. That is not a loophole: it is the
+  // same deliberate human act, performed at the terminal by the person who is
+  // working there, rather than requiring a trip into Figma to tick a box before
+  // an MCP client can write. The daemon owns this value either way — the panel
+  // adopts what the `state` frame tells it rather than pushing its own back.
+  let writes = allowEdits === true
   // Answering every permission by hand turns a five-step change into five
   // interruptions, so the asking can be delegated. It is not the same as
   // removing the gate: `writes` still decides whether the canvas is reachable

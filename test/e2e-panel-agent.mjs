@@ -117,8 +117,13 @@ await settle()
 await until(() => panelSocket !== null, 10_000, 'the socket')
 await until(() => sawFrame('hello') !== undefined, 10_000, 'the greeting')
 check('a stored token connects without being asked', sawFrame('hello') !== undefined)
-check('and the remembered switches go over with the greeting',
-  sawFrame('writes')?.on === false && sawFrame('auto')?.on === true)
+check('and the remembered auto setting goes over with the greeting', sawFrame('auto')?.on === true)
+// The Edits gate lives in the daemon — one gate for the panel and for any MCP
+// client — and `figsnap-agent --allow-edits` can seed it on. A panel that
+// announced its own stored value on connect would silently turn off a flag the
+// person at the terminal had just turned on.
+check('but writes is not pushed: the daemon owns that switch',
+  sawFrame('writes') === undefined, JSON.stringify(sawFrame('writes')))
 check('the connection is shown as open', id('agent-dot').className === 'dot open')
 
 // Reconnecting must replace the socket, not join it. Two live sockets from one
@@ -162,6 +167,22 @@ check('and the menu closes behind it', id('agent-more-menu').hidden === true)
 push({ kind: 'harnesses', harnesses: HARNESSES })
 push({ kind: 'state', harness: null, sessionId: null, cwd: '', running: false, writes: false, auto: true, connected: true })
 await settle()
+
+// The other half of the same rule: what the daemon says about writes is what
+// the pill shows, whether that came from --allow-edits or from another panel.
+check('the pill follows the daemon while it says off',
+  id('agent-writes').getAttribute('aria-pressed') === 'false')
+posted.length = 0
+push({ kind: 'state', harness: null, sessionId: null, cwd: '', running: false, writes: true, auto: true, connected: true })
+await settle()
+check('a daemon that was started with edits allowed turns the pill on, unasked',
+  id('agent-writes').getAttribute('aria-pressed') === 'true')
+check('and the panel remembers what it adopted rather than arguing with it',
+  posted.filter((message) => message.type === 'save-agent-settings').pop()?.writes === true)
+push({ kind: 'state', harness: null, sessionId: null, cwd: '', running: false, writes: false, auto: true, connected: true })
+await settle()
+check('and off again when it is turned off elsewhere',
+  id('agent-writes').getAttribute('aria-pressed') === 'false')
 
 const harnessChips = () => [...id('agent-harnesses').querySelectorAll('.chip')]
 check('the harness picker lists what the daemon found', harnessChips().length === 3, harnessChips().map((chip) => chip.textContent).join(' | '))

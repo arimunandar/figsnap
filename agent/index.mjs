@@ -31,6 +31,16 @@ import { createRunner } from './lib/acp.mjs'
 import { createSessionStore } from './lib/sessions.mjs'
 import { createHttpHandler } from './lib/http.mjs'
 import { findHarness, surveyHarnesses } from './lib/harnesses.mjs'
+import {
+  ACCOUNT_FILE,
+  clearAccount,
+  createAccountGate,
+  defaultRelay,
+  readAccount,
+  signIn,
+  whoIs,
+  writeAccount,
+} from './lib/account.mjs'
 
 const VERSION = '0.1.0'
 const here = dirname(fileURLToPath(import.meta.url))
@@ -39,6 +49,16 @@ const PORT = Number(process.env.FIGSNAP_AGENT_PORT ?? 3056)
 const HOST = '127.0.0.1'
 const TOKEN_FILE = join(homedir(), '.figsnap', 'agent-token')
 const quiet = process.argv.includes('--quiet')
+// The Edits gate lives in this daemon, which is what makes it one gate rather
+// than one per client. Its switch has only ever been in the plugin panel, which
+// is the wrong end for someone working in a terminal: writing a fill meant
+// switching to Figma and ticking a box first. This is the same explicit act, in
+// the place the work is happening. The panel's pill still shows it, and still
+// turns it off.
+const allowEdits =
+  process.argv.includes('--allow-edits') ||
+  process.env.FIGSNAP_ALLOW_EDITS === '1' ||
+  process.env.FIGSNAP_ALLOW_EDITS === 'true'
 
 // `figsnap-agent --mcp` prints the block an MCP client wants and exits. Printing
 // it on every start would be noise; needing it is a one-time job.
@@ -58,6 +78,116 @@ if (process.argv.includes('--mcp')) {
 function log(...args) {
   if (!quiet) console.log(new Date().toISOString().slice(11, 19), ...args)
 }
+
+/** `--relay https://…`, or `--relay=https://…`, for a relay of one's own. */
+function relayArgument() {
+  const at = process.argv.indexOf('--relay')
+  if (at !== -1 && typeof process.argv[at + 1] === 'string') return process.argv[at + 1].replace(/\/+$/, '')
+  const inline = process.argv.find((argument) => argument.startsWith('--relay='))
+  return inline === undefined ? defaultRelay() : inline.slice('--relay='.length).replace(/\/+$/, '')
+}
+
+/**
+ * A plugin iframe cannot open a tab and neither can a pipe, but a terminal can.
+ * Failure is silent on purpose: the URL was printed a line earlier, so a machine
+ * with no browser has lost nothing.
+ */
+function openInBrowser(target) {
+  const [command, args] =
+    process.platform === 'darwin'
+      ? ['open', [target]]
+      : process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', target]]
+        : ['xdg-open', [target]]
+  try {
+    spawn(command, args, { stdio: 'ignore', detached: true }).unref()
+  } catch {}
+}
+
+// `figsnap-agent login | logout | whoami` — the account, not the daemon. Handled
+// before anything is bound to a port, so all three work while a daemon is
+// already running, and `login` takes effect in it without a restart.
+const subcommand = typeof process.argv[2] === 'string' && !process.argv[2].startsWith('-') ? process.argv[2] : ''
+
+if (subcommand === 'login') {
+  const relay = relayArgument()
+  try {
+    const paired = await signIn(relay, {
+      onCode: (pairing) => {
+        console.log('\nSign in to Figsnap\n')
+        console.log(`  1. open this page   ${pairing.url}`)
+        console.log(`  2. your code is     ${pairing.code}`)
+        console.log(
+          `\nWaiting for the browser. The code is good for ${Math.round(pairing.expiresInMs / 60_000)} minutes.`,
+        )
+        openInBrowser(pairing.url)
+      },
+    })
+    // The pairing hands over a token and an email; /auth/me is what fills in the
+    // room, and it also proves the token works before anything is written down.
+    const account = await whoIs(paired.url, paired.token)
+    await writeAccount({ ...paired, email: account?.email ?? paired.email, room: account?.room ?? '' })
+    console.log(`\nSigned in as ${account?.email ?? paired.email}.`)
+    console.log(`Stored in ${ACCOUNT_FILE}. Sign out again with \`figsnap-agent logout\`.`)
+    process.exit(0)
+  } catch (error) {
+    console.error(`\nCould not sign in: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
+}
+
+if (subcommand === 'logout') {
+  const account = await readAccount()
+  if (account === null) {
+    console.log('Nobody is signed in.')
+    process.exit(0)
+  }
+  // Revoked at the relay as well as forgotten here, so a copy of the file that
+  // leaked is worth nothing afterwards. A relay that cannot be reached does not
+  // stop the local half: forgetting it is still the right thing to do.
+  const revoked = await fetch(`${account.url}/auth/revoke`, {
+    method: 'POST',
+    headers: { 'x-relay-token': account.token },
+  }).catch(() => null)
+  await clearAccount()
+  console.log(
+    revoked?.ok === true
+      ? `Signed out ${account.email || 'that account'}, and the token is revoked.`
+      : `Forgot ${account.email || 'that account'} on this machine, but could not reach ${account.url} to revoke ` +
+          'the token. Revoke it from the relay when you can.',
+  )
+  process.exit(0)
+}
+
+if (subcommand === 'whoami') {
+  const account = await readAccount()
+  if (account === null) {
+    console.log('Nobody is signed in. `figsnap-agent login` to change that.')
+    process.exit(0)
+  }
+  const who = await whoIs(account.url, account.token).catch((error) => {
+    console.log(`Signed in as ${account.email} at ${account.url}, but could not check it: ${error.message}`)
+    process.exit(0)
+  })
+  console.log(
+    who === null
+      ? `${account.email} at ${account.url} — revoked. Run \`figsnap-agent login\` again.`
+      : `${who.email} at ${account.url}`,
+  )
+  process.exit(0)
+}
+
+if (subcommand !== '') {
+  console.error(`No such command: ${subcommand}. Try login, logout or whoami, or no command to run the daemon.`)
+  process.exit(1)
+}
+
+// Signing in is optional because the daemon is loopback-only and otherwise needs
+// no network at all; see lib/account.mjs. This makes it a requirement.
+const requireLogin =
+  process.argv.includes('--require-login') ||
+  process.env.FIGSNAP_REQUIRE_LOGIN === '1' ||
+  process.env.FIGSNAP_REQUIRE_LOGIN === 'true'
 
 /**
  * The same token across restarts, so the panel is not re-paired every morning.
@@ -102,9 +232,18 @@ const runner = createRunner({
   emit: (frame) => plugin.send(frame),
   mcpServers,
   sessions,
+  allowEdits,
 })
 
-const server = createServer(createHttpHandler({ plugin, runner, token: TOKEN, version: VERSION }))
+const recheckMs = Number(process.env.FIGSNAP_ACCOUNT_RECHECK_MS)
+const account = createAccountGate({
+  log,
+  requireLogin,
+  ...(Number.isFinite(recheckMs) && recheckMs >= 0 ? { recheckMs } : {}),
+})
+await account.refresh()
+
+const server = createServer(createHttpHandler({ plugin, runner, account, token: TOKEN, version: VERSION }))
 const wss = new WebSocketServer({ server, path: '/panel', maxPayload: 64 * 1024 * 1024 })
 wss.on('connection', (socket, req) => plugin.handleConnection(socket, req))
 
@@ -122,6 +261,9 @@ async function onPanelFrame(message) {
   try {
     switch (message.kind) {
       case 'hello':
+        // Volunteered, not trusted: this is only ever used to refuse a panel and
+        // a daemon signed in as two different people. See lib/account.mjs.
+        account.setPanelIdentity(String(message.account ?? ''))
         plugin.send({ kind: 'harnesses', harnesses: await surveyHarnesses() })
         plugin.send({ kind: 'sessions', sessions: await sessions.all() })
         runner.announce()
@@ -163,6 +305,11 @@ async function onPanelFrame(message) {
         runner.answerPermission(String(message.id ?? ''), message.optionId ?? null)
         break
 
+      // The designer signing in or out of the relay while the panel is open.
+      case 'account':
+        account.setPanelIdentity(String(message.email ?? ''))
+        break
+
       case 'writes':
         runner.setWrites(message.on === true)
         break
@@ -194,6 +341,7 @@ plugin.onFrame((message) => void onPanelFrame(message))
 // where the conversation stands rather than starting a new one.
 plugin.onPresence((present) => {
   if (present) runner.announce()
+  else account.setPanelIdentity('')
 })
 
 server.listen(PORT, HOST, async () => {
@@ -206,6 +354,19 @@ server.listen(PORT, HOST, async () => {
     found.length === 0
       ? '  harnesses      none found — install Claude Code, Codex or the Gemini CLI'
       : `  harnesses      ${found.map((harness) => harness.name).join(', ')}`,
+  )
+  console.log(
+    allowEdits
+      ? '  edits          allowed — started with --allow-edits, so the writing tools are open'
+      : '  edits          off — turn them on in the plugin, or start with --allow-edits',
+  )
+  const who = account.state()
+  console.log(
+    who.signedIn
+      ? `  account        ${who.email}${who.status === 'ok' ? '' : ` (${who.status})`}`
+      : requireLogin
+        ? '  account        required — run `figsnap-agent login` before any tool will answer'
+        : '  account        none — optional; `figsnap-agent login` to attach one',
   )
   console.log('\nPaste the token into the plugin’s Agent tab.')
   console.log('To reach the same designs from a terminal:  claude mcp add figsnap -- npx -y figsnap-mcp')

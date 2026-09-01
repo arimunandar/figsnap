@@ -36,6 +36,12 @@ that can *change* the file. This is the case whether you are the agent the
 designer started inside the plugin's own Agent tab, or an agent in a terminal
 with the \`figsnap\` MCP server added. Skip to *Reading* and *Changing*.
 
+Every curl in this file has a tool that does the same thing better, and the tool
+is never the poorer surface: batches, the saved set, folders and driving the
+canvas are all there. The MCP server also publishes four resources, so a client
+that can \`@\`-mention one need not spend a call: \`figma://selection\`,
+\`figma://page\`, \`figma://library\` and \`figma://node/21:10314\`.
+
 **2. You have no \`figma_*\` tools but could have.** If the user is asking you to
 change a design, or you need more than the relay can give, the tools are one
 command away on the machine running Figma:
@@ -48,6 +54,11 @@ It needs no configuration: \`figsnap-agent\` listens on a fixed port and writes
 its token to \`~/.figsnap/agent-token\`, and the MCP server finds both. If the
 user has not started the daemon, tell them to run \`npx figsnap-agent\`. Suggest
 this rather than working around its absence — the relay cannot write.
+
+Some daemons also require an account. If a tool answers *"Nobody is signed in"*,
+the user runs \`figsnap-agent login\`, which prints a code and opens a sign-in
+page; *"…has been revoked"* means the same command again. Never ask for their
+password — the CLI does not take one, and neither should you.
 
 **3. Neither, and reading is enough.** Then the relay below is your route.
 
@@ -77,6 +88,13 @@ The full manual is \`curl -s ${httpBase}/docs.md\` — read it when something he
 is not enough.
 
 ## Finding the node you want
+
+With the tools: \`figma_get_selection\`, \`figma_get_tree\` and
+\`figma_get_children\` walk the page; \`figma_saved\` with
+\`{"action":"list"}\` or \`{"action":"folders"}\` reads the set the designer
+curated. \`figma_select\` is the other direction — it selects a node and scrolls
+the canvas to it, which is how you *show* the designer what you found rather
+than reciting an id at them. Over HTTP instead:
 
 \`\`\`bash
 curl -s ${httpBase}/selection          # what the designer has selected now
@@ -116,6 +134,13 @@ A batch: \`{"selection":true}\`, \`{"saved":true}\`, \`{"saved":true,"folder":"C
 \`{"nodeIds":[...]}\`, or \`{"urls":[...]}\`. Options on any call: \`scale\` (1-4),
 \`topLayerOnly\`, \`inlineInstances\`.
 
+**\`figma_extract\` takes exactly the same arguments**, batches included:
+\`{"selection":true}\`, \`{"saved":true,"folder":"Checkout"}\`, \`{"nodeIds":[...]}\`,
+\`{"urls":[...]}\`. Up to 20 entries, and one bad id never sinks the rest. Use a
+batch rather than a call per node. No batch returns an image, whatever you ask
+for in \`formats\` — \`figma_export_png\` is the tool for a picture, and it takes
+one node at a time.
+
 **Ask only for the outputs you will use.** \`format\` takes one name or a list from
 \`png\`, \`html\`, \`tsx\`, \`moduleCss\`, \`css\`, \`figmaCss\`; that whole set is the
 default, and \`figmaCss\` alone can run to tens of kilobytes. Building a React
@@ -127,7 +152,10 @@ at; reach for \`tsx\` when they want something to build on.
 
 \`pngData\` is outside the default: the image base64 in the body rather than the
 \`png\` URL. Use it only when whatever reads your answer cannot fetch a URL later,
-since it costs about 40 KB a node.
+since it costs about 40 KB a node. **It is an HTTP-only option** — the
+\`figma_extract\` tool does not offer it, because there \`png\` comes back as a
+real image block for a fortieth of the tokens. If you have the tools, ask for
+\`png\` or use \`figma_export_png\`; never ask a tool for base64.
 
 \`\`\`bash
 curl -s -X POST ${httpBase}/extract \\
@@ -169,16 +197,45 @@ Match the field to the job instead of pasting everything:
   gives you almost nothing.
 - **Checking existing code against the design**: \`png.url\` plus \`css\`.
 
+## The saved set
+
+A bookmark list the designer curates in the panel, grouped into folders one level
+deep. \`figma_saved\` is the whole of it, behind one \`action\`:
+
+| action | |
+| --- | --- |
+| \`list\`, \`folders\` | read the entries, or the folders with their counts |
+| \`save\`, \`unsave\` | \`nodeIds\`, or the current selection when you name none |
+| \`clear\` | empty one \`folder\`, or the whole set when you name none |
+| \`move\` | put \`nodeIds\` in \`folder\` |
+| \`newFolder\`, \`renameFolder\`, \`deleteFolder\` | the folders themselves |
+
+None of it is behind the Edits gate and none of it can be undone with Cmd-Z: it
+is the plugin's own storage, not the design. Saving what a long job was about is
+a cheap way to leave the designer something to look at when it finishes. The
+folder named \`""\` is the root.
+
 ## Changing the design
 
 Only the \`figma_*\` tools can write; the relay has no route that does. Two gates
 stand in front of them, and neither is yours to open:
 
-- **Edits** in the plugin's Agent column decides whether the canvas can be
-  touched at all. It is enforced by the daemon, so a refusal reading *"editing
-  the file is switched off"* means the designer has to tick it — say so and stop,
+- **Edits** decides whether the canvas can be touched at all. It is enforced by
+  the daemon, which is what makes it one gate rather than one per client: the
+  pill in the plugin's Agent column and \`figsnap-agent --allow-edits\` at the
+  terminal are two ways to set the same flag. A refusal reading *"editing the
+  file is switched off"* means the human has to turn it on — say so and stop,
   rather than looking for another way in.
 - Whether you are asked before each change is the harness's own business.
+
+One refusal is not a gate at all and cannot be turned off: *"the Figsnap plugin
+is not open in Figma"*. The Plugin API only exists while the plugin does, so the
+daemon has nothing to forward to. Ask for it to be opened.
+
+Two more refusals are about who rather than what, and both name their own fix:
+*"Nobody is signed in"* wants \`figsnap-agent login\`, and *"the Figma plugin is
+signed in as …"* means the terminal and the plugin are two different accounts.
+Report either and stop.
 
 Every call is one undo step, so the designer takes any single change back with
 one Cmd-Z. Before a run that will change several things, call
@@ -218,6 +275,8 @@ Three that catch people out:
 After a change, \`figma_export_png\` is how you check it landed rather than
 assuming. \`figma_set_fill\` and \`figma_set_stroke\` also read the colour back off
 the node and return it, so a write that did not take is visible without looking.
+Then \`figma_select\` the node you changed, so the designer is looking at it when
+you say what you did.
 
 ## Things that will bite you
 
@@ -255,24 +314,30 @@ value is that the raw responses, which run to tens of kilobytes each, stay out o
 the caller's context.
 
 If you have \`figma_*\` tools, use them: \`figma_get_selection\`,
-\`figma_get_children\`, \`figma_extract\` and \`figma_export_png\` do everything
-below without HTTP or a token, and \`figma_extract\`'s \`formats\` argument takes
-the same names as \`format\`. Otherwise the relay at \`${httpBase}\` is your route,
-and the method is the same either way. **You read; you never write** — leave any
-\`figma_set_*\` or \`figma_create_*\` tool alone even where you have one.
+\`figma_get_children\`, \`figma_extract\`, \`figma_export_png\` and
+\`figma_saved\` do everything below without HTTP or a token. \`figma_extract\`
+takes the same body as \`POST /extract\`, batches included, and its \`formats\`
+argument takes the same names as \`format\`. Otherwise the relay at
+\`${httpBase}\` is your route, and the method is the same either way. **You read;
+you never write** — leave any \`figma_set_*\` or \`figma_create_*\` tool alone even
+where you have one, and leave \`figma_select\` alone too: moving the designer's
+viewport is not yours to do on someone else's behalf.
 
 ## Method
 
 1. \`curl -s ${httpBase}/health\`. If \`pluginConnected\` is not true, stop and
    report exactly what is wrong. Do not speculate about the design.
-2. Resolve what to extract: \`/selection\`, \`/saved\` (optionally one \`/folders\`
-   group), \`/tree\`, \`/children/:id\`, or the ids and links you were given.
+2. Resolve what to extract: \`figma_get_selection\` /
+   \`figma_saved {"action":"list"}\`, or over HTTP \`/selection\`, \`/saved\`
+   (optionally one \`/folders\` group), \`/tree\`, \`/children/:id\` — or the ids
+   and links you were given.
    To find a node by name, walk with \`?depth=\` — \`/tree?depth=3\` in one call
    beats a dozen shallow ones. Scope it to a node (\`/children/<id>?depth=all\`)
    rather than asking for the whole page, which is mostly vectors and will hit
    the 2000-node cap.
-3. Extract with \`POST /extract\`. Use a batch body (\`nodeIds\`, \`urls\`,
-   \`selection\`, \`saved\`) rather than one call per node.
+3. Extract with \`figma_extract\`, or \`POST /extract\`. Use a batch body
+   (\`nodeIds\`, \`urls\`, \`selection\`, \`saved\`) rather than one call per node;
+   both surfaces take it, and it is capped at 20 entries.
    **Ask only for the outputs the caller needs**, with \`format\`. The default is
    all five and \`figmaCss\` alone is most of the payload; \`{"format":["tsx"]}\`
    is a twentieth of the size. Reach for \`figmaCss\` only when the question is
