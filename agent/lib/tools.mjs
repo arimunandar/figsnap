@@ -11,6 +11,7 @@
 // refuses every mutating tool until the panel turns writes on, which is a
 // switch the designer holds rather than a prompt the agent can talk past.
 
+import { FINDABLE_TYPES } from '../../shared/nodes.mjs'
 import {
   batchCommand,
   folderWriteCommand,
@@ -935,6 +936,151 @@ export const TOOLS = [
       additionalProperties: false,
     },
     params: (args) => ({ title: args.title, ...(args.description === undefined ? {} : { description: args.description }) }),
+  },
+
+  // ------------------------------------------------------ the rest of the file
+  //
+  // The reading tools above answer about the page that is open. These make the
+  // other pages addressable, and searching cheaper than walking.
+
+  {
+    name: 'figma_find_nodes',
+    title: 'Find layers',
+    description:
+      'Finds layers by type, by name and by the words in them. Every filter is optional and they narrow together.\n\n' +
+      'This is the cheap way to locate something. Walking with figma_get_tree and figma_get_children costs a round trip per level and returns every sibling; asking here for {types:["INSTANCE"], name:"button"} costs one call. ' +
+      'Searches the current page unless you pass nodeId to search inside one branch, or allPages to search the whole file — which is the only way to find something that is not on the page the designer happens to have open.',
+    mutates: false,
+    command: 'find_nodes',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        types: {
+          type: 'array',
+          items: { type: 'string', enum: FINDABLE_TYPES },
+          description: 'Layer types to keep. Omit for any type.',
+        },
+        name: { type: 'string', description: 'Substring of the layer name, case-insensitive.' },
+        text: { type: 'string', description: 'Substring of a text layer’s words, case-insensitive. Implies TEXT.' },
+        nodeId: { type: 'string', description: 'Search inside this branch instead of the whole page.' },
+        allPages: { type: 'boolean', description: 'Search every page in the file. Slower, and the answer names the page each row is on.' },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Most rows to return. Default 50.' },
+      },
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_pages',
+    title: 'The pages, and which one is open',
+    description:
+      'list — every page in the file, and which is current. open — switch to one, by pageId or by name.\n\n' +
+      'Worth calling before concluding something is missing: every other reading tool answers about the current page only, so a frame on another page looks exactly like a frame that does not exist. Opening a page moves the designer’s view, which is the same kind of act as figma_select — nothing in the file changes and there is nothing to undo, so it is not behind the Edits switch.',
+    // Switching pages writes nothing to the document but is not read-only from
+    // the designer's chair, which is the distinction `figma_saved` also draws.
+    mutates: false,
+    readOnly: false,
+    command: 'pages',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'open'], description: 'Which of the two.' },
+        pageId: { type: 'string', description: 'For open: the page id from list.' },
+        name: { type: 'string', description: 'For open: the page name, if you have no id.' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_component_properties',
+    title: 'What a component exposes',
+    description:
+      'The properties a component, component set or instance has: the variants, and the text, boolean and instance-swap properties, with what this instance currently has them set to.\n\n' +
+      'Call this before figma_set_instance_properties. The key that setter needs carries an id suffix for everything but a variant — "Label#8:2", not "Label" — and there is no way to guess it.',
+    mutates: false,
+    command: 'component_properties',
+    inputSchema: {
+      type: 'object',
+      properties: { nodeId: nodeIdArgument },
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_group',
+    title: 'Group or ungroup',
+    description:
+      'group — puts nodeIds in a new group, inside the first one’s own parent. ungroup — dissolves a group or frame and returns the children it let go.\n\n' +
+      'A group is the honest answer when several layers are one thing but need no layout of their own; reach for figma_create_frame with auto layout when they do.',
+    mutates: true,
+    command: 'group_nodes',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['group', 'ungroup'], description: 'Default group.' },
+        nodeIds: { type: 'array', items: { type: 'string' }, description: 'For group: the layers to gather, up to 20.' },
+        nodeId: { type: 'string', description: 'For ungroup: the group or frame to dissolve.' },
+        name: { type: 'string', description: 'For group: what to call it.' },
+      },
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_insert_image',
+    title: 'Put an image on the canvas',
+    description:
+      'Places a PNG, JPG or GIF, passed as base64. With nodeId it becomes that layer’s fill, which is how a placeholder gets its picture; without one it arrives as a new rectangle at its own pixel size.\n\n' +
+      'Base64 rather than a URL on purpose: the plugin’s manifest allows only the relay and the local daemon as network destinations, so the plugin cannot fetch an image from anywhere a designer keeps one. Read the file yourself and send the bytes. The cap is 700KB of base64, which is roughly a 500KB image.',
+    mutates: true,
+    command: 'insert_image',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        data: { type: 'string', description: 'The image as base64. A data: URL prefix is accepted and ignored.' },
+        nodeId: { type: 'string', description: 'Fill this layer instead of making a new one.' },
+        parentId: { type: 'string', description: 'Where a new rectangle goes. Default: the current page.' },
+        name: { type: 'string' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number', minimum: 0.01, description: 'Default: the image’s own width.' },
+        height: { type: 'number', minimum: 0.01, description: 'Default: the image’s own height.' },
+        scaleMode: { type: 'string', enum: ['FILL', 'FIT', 'CROP', 'TILE'], description: 'How it sits in the frame. Default FILL.' },
+      },
+      required: ['data'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_set_instance_properties',
+    title: 'Set an instance’s properties',
+    description:
+      'Sets which variant an instance is, and the text and booleans its component exposes. Take the keys from figma_component_properties; a key given without its id suffix is matched anyway, and one that matches nothing is refused with the list of what does.\n\n' +
+      'This is the difference between placing a component and using it. figma_create_instance gives you the default variant — this is how it becomes the large one, or the disabled one, with the right label.',
+    mutates: true,
+    command: 'set_instance_properties',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        properties: {
+          type: 'object',
+          description: 'Key to value. A variant takes its option name, a boolean property true or false, a text property a string.',
+          additionalProperties: { type: ['string', 'boolean'] },
+        },
+      },
+      required: ['properties'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
   },
 ]
 

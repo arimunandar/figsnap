@@ -29,6 +29,15 @@ function encodeBinary(value) {
  * A scene node with the properties the plugin actually reads — including the
  * geometry the Figma-CSS renderer needs, which is most of them.
  */
+/** Descendants, depth first, which is the order Figma's own finders return. */
+function descend(list, into = []) {
+  for (const node of list) {
+    into.push(node)
+    if (node.children?.length) descend(node.children, into)
+  }
+  return into
+}
+
 export function makeNode(id, name, type = 'FRAME', children = [], css = { width: '100px' }) {
   const node = {
     id,
@@ -80,11 +89,44 @@ export function makeNode(id, name, type = 'FRAME', children = [], css = { width:
       node.width = width
       node.height = height
     },
+    // Real Figma puts these on every node that can hold children, and
+    // find_nodes searches a branch by calling them on one.
+    findAll(predicate) {
+      return descend(node.children ?? []).filter((candidate) => (predicate ? predicate(candidate) : true))
+    },
+    findAllWithCriteria({ types }) {
+      return descend(node.children ?? []).filter((candidate) => types.includes(candidate.type))
+    },
     strokeAlign: 'INSIDE',
     effects: [],
     children,
     isAsset: false,
     parent: null,
+    // The component side of the API, for the two tools that read and set it.
+    // Only the shape: a fixture supplies the definitions and values it wants.
+    ...(type === 'COMPONENT' || type === 'COMPONENT_SET' ? { componentPropertyDefinitions: {} } : {}),
+    ...(type === 'INSTANCE'
+      ? {
+          componentProperties: {},
+          mainComponent: null,
+          async getMainComponentAsync() {
+            return node.mainComponent
+          },
+          setProperties(properties) {
+            for (const [key, value] of Object.entries(properties)) {
+              if (node.componentProperties[key] === undefined) throw new Error(`no property ${key}`)
+              // Real Figma refuses a variant value that is not one of the
+              // options, and that refusal is what the tool reports.
+              const definition = node.componentProperties[key]
+              if (definition.type === 'VARIANT' && Array.isArray(definition.variantOptions) &&
+                  !definition.variantOptions.includes(String(value))) {
+                throw new Error(`${value} is not an option for ${key}`)
+              }
+              node.componentProperties[key] = { ...definition, value }
+            }
+          },
+        }
+      : {}),
     // A TEXT node carries a whole typography block that the Figma-CSS renderer
     // reads unconditionally.
     ...(type === 'TEXT'
@@ -153,25 +195,19 @@ function index(nodes, into = new Map()) {
  * Starts a relay, loads the plugin against it, and returns the pieces a suite
  * needs: the fake figma to poke, and helpers to call the relay over HTTP.
  */
-export async function startPlugin({ pageChildren = [], offPage = [], label = 'plugin' } = {}) {
+export async function startPlugin({ pageChildren = [], offPage = [], otherPage = [], label = 'plugin' } = {}) {
   // Its own account, so this plugin gets a room nothing else is writing to.
   const base = requireRelay(label)
   const { token, headers } = await account(base, label)
   const storage = new Map()
   // offPage nodes are reachable by id but are not on the current page, which is
   // how a fixture can be extracted without disturbing what /tree returns.
-  const nodes = index([...pageChildren, ...offPage])
+  const nodes = index([...pageChildren, ...offPage, ...otherPage])
   let toPanel = () => {}
 
   // Figma always sets parent; the Figma-CSS renderer reads it on the root.
-  /** Everything under the current page, which is what findAllWithCriteria walks. */
-  const walk = (list, into = []) => {
-    for (const node of list) {
-      into.push(node)
-      if (node.children?.length) walk(node.children, into)
-    }
-    return into
-  }
+  /** Everything under a page, which is what its finders walk. */
+  const walk = descend
 
   const page = {
     id: 'p1',
@@ -196,11 +232,49 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
       child.parent = page
       pageChildren.splice(index, 0, child)
     },
+    findAll(predicate) {
+      return walk(pageChildren).filter((node) => (predicate ? predicate(node) : true))
+    },
     findAllWithCriteria({ types }) {
       return walk(pageChildren).filter((node) => types.includes(node.type))
     },
+    // Under dynamic-page access a page's contents are not there until asked
+    // for, and a plugin that forgets to ask finds nothing rather than failing.
+    loaded: false,
+    async loadAsync() {
+      page.loaded = true
+    },
   }
   for (const child of pageChildren) child.parent = page
+
+  /**
+   * A second page. The point of it is that everything except figma_pages and
+   * find_nodes' allPages answers about `figma.currentPage` only, so a fixture
+   * with one page cannot tell "not on this page" from "not in this file".
+   */
+  const second = {
+    id: 'p2',
+    name: 'Handoff',
+    type: 'PAGE',
+    children: otherPage,
+    selection: [],
+    parent: null,
+    appendChild(child) {
+      child.parent = second
+      otherPage.push(child)
+    },
+    findAll(predicate) {
+      return walk(otherPage).filter((node) => (predicate ? predicate(node) : true))
+    },
+    findAllWithCriteria({ types }) {
+      return walk(otherPage).filter((node) => types.includes(node.type))
+    },
+    loaded: false,
+    async loadAsync() {
+      second.loaded = true
+    },
+  }
+  for (const child of otherPage) child.parent = second
 
   /** Ids for anything the plugin creates during a run. */
   let created = 0
@@ -211,7 +285,7 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
   }
 
   const figma = {
-    root: { id: 'doc-1' },
+    root: { id: 'doc-1', name: 'Test file', children: [page, second] },
     fileKey: 'FILEKEY',
     mixed: Symbol('mixed'),
     currentPage: page,
@@ -322,7 +396,37 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
       return found ?? null
     },
     async loadAllPagesAsync() {},
-    async setCurrentPageAsync() {},
+    async setCurrentPageAsync(next) {
+      figma.currentPage = next
+    },
+    // Grouping is Figma's, not the node's: it makes the group, moves the
+    // children into it and puts it where the first one was.
+    group(members, parent, index) {
+      const node = born('Group', 'GROUP')
+      node.children = []
+      for (const member of members) node.appendChild(member)
+      if (index === undefined) parent.appendChild(node)
+      else parent.insertChild(index, node)
+      return node
+    },
+    ungroup(node) {
+      const parent = node.parent
+      const children = [...node.children]
+      for (const child of children) parent.appendChild(child)
+      node.remove()
+      return children
+    },
+    // Only enough to tell a real image from anything else: the tool's job is to
+    // decode base64 and hand over bytes, and a wrong guess must be refused.
+    images: [],
+    createImage(bytes) {
+      const png = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50
+      const jpg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8
+      if (!png && !jpg) throw new Error('Unsupported image format')
+      const hash = `img${figma.images.length + 1}`
+      figma.images.push({ hash, bytes })
+      return { hash, async getSizeAsync() { return { width: 24, height: 12 } } }
+    },
   }
 
   const bundle = await readFile(join(root, 'dist/code.js'), 'utf8')
