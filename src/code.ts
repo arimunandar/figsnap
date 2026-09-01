@@ -250,8 +250,10 @@ type Layer = {
   height: number
   css: [string, string][]
   characters?: string
-  /** Inline SVG for a layer that is nothing but vectors. See collapseToSvg. */
+  /** Inline SVG for a layer that is nothing but vectors. */
   svg?: string
+  /** A data URI for a layer whose paint is an image Figma will not hand over. */
+  image?: string
   isAsset: boolean
   instanceOf?: string
   instanceProps: PropValue[]
@@ -260,7 +262,11 @@ type Layer = {
 
 type BuildState = {
   taken: Set<string>
+  imageBytes: number
+  /** Layers the React and CSS outputs describe; what `layerCount` reports. */
   count: number
+  /** Every layer visited, including inside instances, for the work cap. */
+  walked: number
   truncated: boolean
   svgCount: number
   svgBytes: number
@@ -283,6 +289,55 @@ const VECTOR_TYPES = ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'LINE']
 const MAX_SVG_LAYERS = 80
 const MAX_SVG_BYTES = 90_000
 const MAX_SVG_TOTAL = 600_000
+
+// An image fill points at a file inside Figma. Rendering that layer and inlining
+// the result is the only way a copied page can show it, and the only way it can
+// stay one file. Bounded, because base64 costs a third more than the bytes and
+// a page of photographs would otherwise be measured in megabytes.
+const MAX_IMAGE_BYTES = 400_000
+const MAX_IMAGE_TOTAL = 2_000_000
+
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+/**
+ * The plugin sandbox has no btoa and no Buffer, so base64 is done by hand. Only
+ * the HTML output needs it — everywhere else images travel as raw bytes and are
+ * encoded by whoever is sending them.
+ */
+function toBase64(bytes: Uint8Array): string {
+  let out = ''
+  for (let index = 0; index < bytes.length; index += 3) {
+    const a = bytes[index]
+    const b = bytes[index + 1]
+    const c = bytes[index + 2]
+    out += BASE64_ALPHABET[a >> 2]
+    out += BASE64_ALPHABET[((a & 3) << 4) | ((b ?? 0) >> 4)]
+    out += b === undefined ? '=' : BASE64_ALPHABET[((b & 15) << 2) | ((c ?? 0) >> 6)]
+    out += c === undefined ? '=' : BASE64_ALPHABET[c & 63]
+  }
+  return out
+}
+
+/**
+ * The layer rendered as a PNG, inline. Rendering bakes in whatever is drawn on
+ * top, so a layer with children is left to the placeholder — the children are
+ * about to be rendered as elements and would appear twice.
+ */
+async function exportImage(node: SceneNode, state: BuildState): Promise<string | null> {
+  if ('children' in node && node.children.some((child) => child.visible)) return null
+  try {
+    const bytes = await node.exportAsync({
+      format: 'PNG',
+      constraint: { type: 'SCALE', value: 2 },
+    })
+    if (bytes.length > MAX_IMAGE_BYTES) return null
+    if (state.imageBytes + bytes.length > MAX_IMAGE_TOTAL) return null
+    state.imageBytes += bytes.length
+    return `data:image/png;base64,${toBase64(bytes)}`
+  } catch {
+    return null
+  }
+}
 
 async function exportSvg(node: SceneNode, state: BuildState): Promise<string | null> {
   try {
@@ -333,13 +388,24 @@ function readInstanceProps(node: InstanceNode): PropValue[] {
   return props
 }
 
-async function buildLayer(node: SceneNode, state: BuildState, isRoot: boolean): Promise<Layer | null> {
-  if (state.count >= MAX_LAYERS) {
+/**
+ * `insideComponent` marks a layer that only the HTML output will use: the React
+ * and CSS outputs stop at an instance boundary, so these layers are walked but
+ * not counted, and `layerCount` means the same thing either way.
+ */
+async function buildLayer(
+  node: SceneNode,
+  state: BuildState,
+  isRoot: boolean,
+  insideComponent = false,
+): Promise<Layer | null> {
+  if (state.walked >= MAX_LAYERS) {
     state.truncated = true
     return null
   }
   if (!node.visible) return null
-  state.count++
+  state.walked++
+  if (!insideComponent) state.count++
 
   const kebab = uniqueKebab(node.name, state.taken)
   let css: [string, string][] = []
@@ -366,11 +432,22 @@ async function buildLayer(node: SceneNode, state: BuildState, isRoot: boolean): 
     layer.characters = node.characters
   }
 
+  // Only the page needs this: the other outputs are meant to be edited, and a
+  // 200 kB data URI in a stylesheet is not something anyone wants to edit.
+  if (state.options.outputs.indexOf('html') !== -1 && css.some(([, value]) => isImageFill(value))) {
+    layer.image = (await exportImage(node, state)) ?? undefined
+  }
+
   const treatAsComponent = node.type === 'INSTANCE' && !state.options.inlineInstances && !isRoot
   if (treatAsComponent) {
     layer.instanceOf = toPascal(await mainComponentName(node))
     layer.instanceProps = readInstanceProps(node)
-    return layer
+    // React can write `<Title />` because the component exists somewhere. HTML
+    // cannot: an instance left empty is a div with no content, which collapses
+    // to nothing. So the contents are walked for the page's sake, and every
+    // other renderer stops here.
+    if (!state.options.outputs.includes('html')) return layer
+    insideComponent = true
   }
 
   // An icon collapses into one inline SVG rather than a stack of empty divs, and
@@ -388,7 +465,7 @@ async function buildLayer(node: SceneNode, state: BuildState, isRoot: boolean): 
   const descend = !(isRoot && state.options.selectionOnly)
   if (descend && 'children' in node) {
     for (const child of node.children) {
-      const built = await buildLayer(child, state, false)
+      const built = await buildLayer(child, state, false, insideComponent)
       if (built) layer.children.push(built)
     }
   }
@@ -462,6 +539,9 @@ function renderPlainCss(root: Layer): string {
       lines.push(`${indent}}`)
       lines.push('')
     }
+    // What is inside an instance is the component's business, not this
+    // stylesheet's — the same boundary the React output stops at.
+    if (layer.instanceOf) return
     for (const child of layer.children) walk(child, depth + 1)
   }
   walk(root, 0)
@@ -478,6 +558,7 @@ function renderModuleCss(root: Layer): string {
       lines.push('}')
       lines.push('')
     }
+    if (layer.instanceOf) return
     for (const child of layer.children) walk(child)
   }
   walk(root)
@@ -618,13 +699,15 @@ function negativeGap(layer: Layer): { axis: 'top' | 'left'; amount: number } | n
 function renderHtmlCss(root: Layer, width: number, height: number): string {
   const lines: string[] = []
   const walk = (layer: Layer, isRoot: boolean) => {
-    let hasImage = false
+    let placeheld = false
     const declarations = layer.css.map(([property, value]) => {
       if (isImageFill(value)) {
-        hasImage = true
-        // The whole declaration goes, not just the url(): what Figma leaves
-        // beside it is sizing for an image that will not arrive.
-        return `  ${property.indexOf('background') === 0 ? 'background' : property}: ${IMAGE_PLACEHOLDER};`
+        const name = property.indexOf('background') === 0 ? 'background' : property
+        // The whole declaration is replaced, not just the url(): what Figma
+        // leaves beside it sizes an image that is no longer the same one.
+        if (layer.image) return `  ${name}: url(${layer.image}) center / cover no-repeat;`
+        placeheld = true
+        return `  ${name}: ${IMAGE_PLACEHOLDER};`
       }
       return `  ${property}: ${property === 'font-family' ? withFallback(value) : value};`
     })
@@ -666,7 +749,7 @@ function renderHtmlCss(root: Layer, width: number, height: number): string {
     }
     if (declarations.length > 0) {
       lines.push(
-        hasImage
+        placeheld
           ? `/* ${layer.name} — ${layer.nodeType}, image fill shown as a placeholder */`
           : `/* ${layer.name} — ${layer.nodeType} */`,
       )
@@ -983,7 +1066,16 @@ async function buildExtraction(node: SceneNode, options: ExtractOptions): Promis
       })
     : undefined
 
-  const state: BuildState = { taken: new Set(), count: 0, truncated: false, svgCount: 0, svgBytes: 0, options }
+  const state: BuildState = {
+    taken: new Set(),
+    imageBytes: 0,
+    count: 0,
+    walked: 0,
+    truncated: false,
+    svgCount: 0,
+    svgBytes: 0,
+    options,
+  }
   const root = await buildLayer(node, state, true)
   if (!root) throw new Error('Layer is hidden.')
 

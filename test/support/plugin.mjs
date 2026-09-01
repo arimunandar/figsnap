@@ -79,7 +79,8 @@ export function makeNode(id, name, type = 'FRAME', children = [], css = { width:
       return css
     },
     async exportAsync() {
-      return new Uint8Array([137, 80, 78, 71])
+      // The real PNG signature, so anything that decodes the bytes sees a PNG.
+      return new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
     },
   }
   for (const child of children) child.parent = node

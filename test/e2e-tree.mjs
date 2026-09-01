@@ -38,9 +38,23 @@ const squashed = makeNode('5:3', 'Underline', 'FRAME', [], { height: '4px', padd
 squashed.height = 4
 const tightened = makeNode('5:4', 'Stack', 'FRAME', [], { display: 'flex', 'flex-direction': 'column', gap: '-4px' })
 const holder = makeNode('6:1', 'Holder', 'FRAME', [floating], { display: 'block' })
-const fixtures = makeNode('5:0', 'Fixtures', 'FRAME', [pinned, holder, photo, squashed, tightened])
+// An instance with contents. React writes `<Card />` because the component
+// exists somewhere; HTML has nowhere to defer to and needs what is inside.
+const caption = makeNode('7:2', 'Caption', 'TEXT', [], {
+  'font-family': 'Inter',
+  'font-size': '12px',
+})
+const card = makeNode('7:1', 'Card', 'INSTANCE', [caption], { display: 'flex', padding: '8px' })
 
-const plugin = await startPlugin({ label: 'tree', pageChildren: [top], offPage: [fixtures] })
+const fixtures = makeNode('5:0', 'Fixtures', 'FRAME', [pinned, holder, photo, squashed, tightened, card])
+
+// An image fill on a layer that also has children.
+const overlaid = makeNode('8:1', 'Overlaid', 'TEXT', [], { 'font-family': 'Inter' })
+const gallery = makeNode('8:0', 'Gallery', 'FRAME', [overlaid], {
+  background: 'url(<path-to-image>) lightgray 50% / cover no-repeat',
+})
+
+const plugin = await startPlugin({ label: 'tree', pageChildren: [top], offPage: [fixtures, gallery] })
 const { get, body } = plugin
 
 // ------------------------------------------------------------------ depth
@@ -116,7 +130,7 @@ check('a comma-separated string works too',
 
 const withImage = await body('POST', '/extract', { nodeId: '3:1', format: ['png', 'tsx'] })
 check('png is an output like any other',
-  typeof withImage.data.png?.url === 'string' && withImage.data.png.bytes === 4)
+  typeof withImage.data.png?.url === 'string' && withImage.data.png.bytes === 8)
 
 // topLayerOnly has to reach the Figma-CSS renderer too. Its root is handed a
 // real parent so the root's own auto-layout block can be worked out, which is
@@ -165,11 +179,27 @@ check('but an absolute layer is not itself made relative',
   !/\.overlay \{[^}]*position: relative/.test(fixedHtml))
 
 // An image fill points inside Figma; outside it the box would be a hole.
-check('an image fill becomes a placeholder colour',
-  /\.avatar \{[^}]*background: #dfe3e8/.test(fixedHtml) && !fixedHtml.includes('url(<path-to-image>)'),
-  fixedHtml.slice(fixedHtml.indexOf('.avatar {'), fixedHtml.indexOf('.avatar {') + 70).replace(/\n/g, ' '))
-check('and says so, rather than looking like a design choice',
-  fixedHtml.includes('image fill shown as a placeholder'))
+// A copied page has to carry its own images: the url() Figma writes points
+// inside Figma, so the layer is rendered and inlined instead.
+check('an image fill is inlined as the image itself',
+  /\.avatar \{[^}]*background: url\(data:image\/png;base64,/.test(fixedHtml),
+  fixedHtml.slice(fixedHtml.indexOf('.avatar {'), fixedHtml.indexOf('.avatar {') + 80).replace(/\n/g, ' '))
+check('and Figma\'s unreachable url is gone', !fixedHtml.includes('url(<path-to-image>)'))
+check('the data URI decodes to a real PNG', (() => {
+  const found = fixedHtml.match(/url\(data:image\/png;base64,([A-Za-z0-9+/=]+)\)/)
+  if (!found) return false
+  return Buffer.from(found[1], 'base64').subarray(0, 8).equals(
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+})())
+
+// A layer with children cannot be baked: the children are about to be rendered
+// as elements and would appear twice.
+const painted = await body('POST', '/extract', { nodeId: '8:0', format: 'html' })
+check('a painted layer with children keeps the placeholder',
+  /\.gallery \{[^}]*background: #dfe3e8/.test(painted.data.html) &&
+  painted.data.html.includes('image fill shown as a placeholder'),
+  painted.data.html.slice(painted.data.html.indexOf('.gallery {'), painted.data.html.indexOf('.gallery {') + 70).replace(/\n/g, ' '))
+check('while its children still render', painted.data.html.includes('>Overlaid<'))
 
 // Figma lets padding exceed its frame and lets spacing go negative; CSS does
 // neither, and silently disagrees rather than erroring.
@@ -178,6 +208,24 @@ check('padding larger than the frame gives way to the frame',
 check('a negative gap becomes a margin',
   /\.stack > \* \+ \* \{\s*margin-top: -4px/.test(fixedHtml) &&
   /\.stack \{[^}]*gap: 0/.test(fixedHtml))
+
+// The default: instances are components, not expanded. Only the page needs
+// their contents, because a page has no component to point at.
+const boundary = await body('POST', '/extract', { nodeId: '5:0', format: ['html', 'tsx', 'css'] })
+check('html renders what is inside an instance',
+  boundary.data.html.includes('>Caption<') && boundary.data.html.includes('.caption {'),
+  boundary.data.html.includes('>Caption<') ? 'text present' : 'text MISSING')
+check('an instance is not left as an empty box',
+  !/<div class="card"><\/div>/.test(boundary.data.html))
+check('React still points at the component instead',
+  boundary.data.tsx.includes('<Card ') && !boundary.data.tsx.includes('Caption'))
+check('and the CSS stops at the boundary as it always did',
+  boundary.data.css.includes('.card {') && !boundary.data.css.includes('.caption {'))
+// The extra walk html needs must not change what layerCount means.
+const withoutHtml = await body('POST', '/extract', { nodeId: '5:0', format: 'tsx' })
+check('layerCount counts what React describes, not the walk',
+  boundary.data.layerCount === withoutHtml.data.layerCount,
+  `${boundary.data.layerCount} with html, ${withoutHtml.data.layerCount} without`)
 
 const typo = await body('POST', '/extract', { nodeId: '3:1', format: 'html' })
 check('a lone font name gets a generic fallback',
@@ -191,7 +239,7 @@ check('and the face itself is requested',
 const inline = await body('POST', '/extract', { nodeId: '3:1', format: ['png', 'pngData'] })
 check('pngData inlines the image', inline.data.pngData?.dataUri?.startsWith('data:image/png;base64,'))
 check('and reports its size and scale',
-  inline.data.pngData.bytes === 4 && inline.data.pngData.scale === 2)
+  inline.data.pngData.bytes === 8 && inline.data.pngData.scale === 2)
 check('while png stays a URL alongside it', inline.data.png?.url?.includes('/assets/'))
 const onlyData = await body('POST', '/extract', { nodeId: '3:1', format: 'pngData' })
 check('asking only for the data URI drops the URL',

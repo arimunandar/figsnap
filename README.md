@@ -502,8 +502,17 @@ with Figma:
   10px padding rendered as a 20px blob over the label.
 - **A negative auto-layout gap becomes a margin.** `gap: -4px` is not valid CSS
   and is discarded outright, which shifts every sibling.
-- **An image fill becomes a flat placeholder colour.** The fill points at a file
-  inside Figma that nothing outside can fetch, so the box would be a hole.
+- **Images come with it.** A fill points at a file inside Figma, so the layer is
+  rendered and inlined as a data URI: the page you copy carries its own pictures
+  and stays one file. Bounded at 400 kB a layer and 2 MB in total. Past that — or
+  when a painted layer also has children, since baking it would draw them twice —
+  the box falls back to a flat placeholder colour, and the comment above the rule
+  says so.
+- **Instances are expanded.** React writes `<Title />` because the component
+  exists somewhere in your codebase; a page has nowhere to defer to, so an
+  unexpanded instance is an empty div that collapses to nothing. The React and
+  CSS outputs still stop at the boundary, and `layerCount` still counts what
+  React describes, so asking for HTML does not change it.
 
 Icons collapse at the outermost vector-only node, so a fifty-path flag is one
 `<svg>` rather than fifty. The byte budget is a total (600 kB) rather than
