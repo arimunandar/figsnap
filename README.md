@@ -147,7 +147,7 @@ src/ui/bridge.ts   UI thread: WebSocket link to the relay and to the daemon
 src/ui/markdown.ts UI thread: the Markdown subset an agent actually writes
 agent/index.mjs    The local bridge daemon: WS server, ACP client, MCP server
 agent/lib/tools.mjs   The figma_* tools an agent is handed
-agent/mcp-stdio.mjs   The MCP server a harness spawns; proxies into the plugin
+agent/mcp-stdio.mjs   figsnap-mcp: the figma_* tools, for the harness or any MCP client
 probe/             Throwaway: measures how long Figma leaves a plugin running
 src/ui/index.html  UI template; build.mjs fills in <!-- STYLE --> and <!-- SCRIPT -->
 src/ui/style.css   Styles, using Figma's theme variables
@@ -449,6 +449,32 @@ to use.
 Nothing is truncated on the way through. Figma's own MCP server caps a response
 at 20 kB; `figma_extract` returns whatever the node is, which for a real screen
 is well past that, with images inlined and icons as real SVG.
+
+### The same designs from a terminal
+
+The `figma_*` tools are an MCP server, and nothing about it is private to the
+plugin's own chat. Any MCP client on the machine running Figma can spawn it:
+
+```bash
+claude mcp add figsnap -- npx -y figsnap-mcp
+```
+
+No configuration. `figsnap-agent` listens on a fixed port and writes its token
+to `~/.figsnap/agent-token`; `figsnap-mcp` finds both. `figsnap-agent --mcp`
+prints the same thing as a JSON block for clients that want one.
+
+So there are three ways to reach the open file, and the skill in
+`.claude/skills/figsnap` teaches an agent to work out which one it is on:
+
+| | reads | writes | needs |
+| --- | --- | --- | --- |
+| the plugin's Agent column | ✓ | ✓ | nothing |
+| `figsnap-mcp` from a project | ✓ | ✓ | the daemon running |
+| the relay over HTTP | ✓ | — | an account |
+
+**Edits still gates it.** An agent reaching in from a terminal gets the same
+refusal on the writing tools until the designer turns Edits on in the panel,
+because that switch lives in the daemon rather than in any one client.
 
 ### Keeping it to your machine
 

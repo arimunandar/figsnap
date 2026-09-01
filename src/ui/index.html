@@ -341,6 +341,28 @@
         </p>
         <div class="api" id="agent-tools"></div>
 
+        <h2>The same designs from a terminal</h2>
+        <p>
+          The tools the in-panel agent uses are an MCP server, and nothing about
+          it is private to this panel. Any MCP client on this machine can spawn
+          it and reach the file you have open — Claude Code in a project, an
+          editor, a script. One command, no configuration: the daemon listens on
+          a fixed port and writes its token to
+          <code>~/.figsnap/agent-token</code>, and the server finds both.
+        </p>
+        <div class="card tight">
+          <div class="card-row">
+            <pre class="doc-code grow" id="page-cmd-mcp">claude mcp add figsnap -- npx -y figsnap-mcp</pre>
+            <button class="button icon" type="button" data-copy="page-cmd-mcp" title="Copy">&#10697;</button>
+          </div>
+        </div>
+        <p>
+          <strong>Edits still gates it.</strong> An agent reaching in from a
+          terminal gets the same read tools and the same refusal on the writing
+          ones until you turn Edits on here, because that switch lives in the
+          daemon rather than in any one client.
+        </p>
+
         <h2>Where the agent runs</h2>
         <p>
           On your machine, as a subprocess of the daemon, using the login and

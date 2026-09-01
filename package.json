@@ -7,7 +7,8 @@
     "node": ">=20"
   },
   "bin": {
-    "figsnap-agent": "agent/index.mjs"
+    "figsnap-agent": "agent/index.mjs",
+    "figsnap-mcp": "agent/mcp-stdio.mjs"
   },
   "files": [
     "agent",

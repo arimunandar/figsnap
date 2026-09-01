@@ -3134,6 +3134,17 @@ function refreshAgentPage() {
   if (live && agentLog.childElementCount === 0) renderAgentWelcome()
 }
 
+// The same delegated copy the relay page uses, for the commands on this one.
+agentPage.addEventListener('click', async (event: Event) => {
+  const button = (event.target as HTMLElement).closest('[data-copy]') as HTMLElement | null
+  if (!button?.dataset.copy) return
+  const source = document.getElementById(button.dataset.copy)
+  if (!source) return
+  const copied = await copyText(source.textContent ?? '')
+  agentSetupNote.className = copied ? 'subtitle ok-text' : 'subtitle bad-text'
+  agentSetupNote.textContent = copied ? 'Copied.' : 'Copy blocked — select the text instead.'
+})
+
 agentSetupLink.addEventListener('click', () => {
   closeMenus()
   setView('agent')

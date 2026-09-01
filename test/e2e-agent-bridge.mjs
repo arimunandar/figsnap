@@ -14,6 +14,8 @@ import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { WebSocket } from 'ws'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const FAKE = join(root, 'test/support/fake-acp.mjs')
@@ -418,6 +420,50 @@ const browse = await (await fetch(`${BASE}/fs?path=${encodeURIComponent(root)}`,
 })).json()
 check('the directory picker lists directories only', browse.directories.includes('agent') && !browse.directories.includes('package.json'))
 check('and knows a project when it sees one', browse.isProject === true)
+
+// --------------------------------------------------- the MCP server on its own
+//
+// The daemon spawns this for the harness it launched, but nothing about it is
+// private to that: any MCP client can spawn it and reach the same open file.
+// That is the difference between the designs being available inside the
+// plugin's chat and being available wherever the designer works.
+
+async function mcpClient(env) {
+  const client = new Client({ name: 'suite', version: '1.0.0' }, { capabilities: {} })
+  await client.connect(
+    new StdioClientTransport({
+      command: process.execPath,
+      args: [join(root, 'agent/mcp-stdio.mjs')],
+      env: { ...process.env, ...env },
+    }),
+  )
+  return client
+}
+
+const standalone = await mcpClient({ FIGSNAP_AGENT_URL: BASE, FIGSNAP_AGENT_TOKEN: TOKEN })
+const listed = await standalone.listTools()
+check('any MCP client can list the tools', listed.tools.length >= 31, `${listed.tools.length} tools`)
+
+seen.length = 0
+const answered = await standalone.callTool({ name: 'figma_get_selection', arguments: {} })
+check('and call one, all the way into the plugin',
+  answered.isError !== true && seen.includes('get_selection'), JSON.stringify(answered.content?.[0]).slice(0, 80))
+await standalone.close()
+
+// A daemon that is not running is the common first-run mistake, and "fetch
+// failed" is not something a user can act on.
+const orphan = await mcpClient({ FIGSNAP_AGENT_URL: 'http://127.0.0.1:1', FIGSNAP_AGENT_TOKEN: 'x' })
+const refused = await orphan.callTool({ name: 'figma_get_selection', arguments: {} })
+check('with no daemon it says how to start one',
+  refused.isError === true && refused.content[0].text.includes('figsnap-agent'), refused.content[0].text.slice(0, 90))
+await orphan.close()
+
+const wrongToken = await mcpClient({ FIGSNAP_AGENT_URL: BASE, FIGSNAP_AGENT_TOKEN: 'not-the-token' })
+const rejected = await wrongToken.callTool({ name: 'figma_get_selection', arguments: {} })
+check('and a wrong token points at the file the right one is in',
+  rejected.isError === true && rejected.content[0].text.includes('.figsnap/agent-token'),
+  rejected.content[0].text.slice(0, 90))
+await wrongToken.close()
 
 // -------------------------------------------------------------- resumption
 //

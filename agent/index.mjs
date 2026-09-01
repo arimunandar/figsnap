@@ -39,6 +39,21 @@ const HOST = '127.0.0.1'
 const TOKEN_FILE = join(homedir(), '.figsnap', 'agent-token')
 const quiet = process.argv.includes('--quiet')
 
+// `figsnap-agent --mcp` prints the block an MCP client wants and exits. Printing
+// it on every start would be noise; needing it is a one-time job.
+if (process.argv.includes('--mcp')) {
+  console.log(
+    JSON.stringify(
+      { mcpServers: { figsnap: { command: 'npx', args: ['-y', 'figsnap-mcp'] } } },
+      null,
+      2,
+    ),
+  )
+  console.log('\nOr, in a terminal:  claude mcp add figsnap -- npx -y figsnap-mcp')
+  console.log('Both find the daemon on 127.0.0.1:3056 and its token in ~/.figsnap/agent-token.')
+  process.exit(0)
+}
+
 function log(...args) {
   if (!quiet) console.log(new Date().toISOString().slice(11, 19), ...args)
 }
@@ -175,6 +190,7 @@ server.listen(PORT, HOST, async () => {
       : `  harnesses      ${found.map((harness) => harness.name).join(', ')}`,
   )
   console.log('\nPaste the token into the plugin’s Agent tab.')
+  console.log('To reach the same designs from a terminal:  claude mcp add figsnap -- npx -y figsnap-mcp')
 })
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

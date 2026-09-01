@@ -7,7 +7,7 @@
 export function skillFiles({ httpBase }) {
   const skill = `---
 name: figsnap
-description: Read designs out of the open Figma file - PNG renders, React components, HTML, CSS, and Figma's own CSS - through the Figsnap relay. Use when the user pastes a figma.com link, names a Figma frame or component, asks to implement/port/build a design as code, asks what a screen looks like, or asks to compare code against a design. Also use when the user mentions the Figsnap plugin or a Figma relay.
+description: Read and change the Figma file the designer has open - PNG renders, React components, HTML, CSS, and Figma's own CSS coming out; fills, text, layout, new layers, components and design tokens going in. Use when the user pastes a figma.com link, names a Figma frame or component, asks to implement/port/build a design as code, asks what a screen looks like, asks to compare code against a design, or asks to change something in Figma. Also use when the user mentions the Figsnap plugin, a Figma relay, or the figsnap MCP server.
 ---
 
 # Reading designs out of Figma
@@ -23,19 +23,37 @@ The relay is a Cloudflare Worker the designer signs into from the plugin. Every
 route that touches a design needs their token; \`/health\`, \`/docs.md\` and
 \`/skill\` do not.
 
-## First: are you inside the plugin?
+## First: which surface are you on?
 
-If you have tools named \`figma_get_selection\`, \`figma_extract\`, \`figma_set_fill\`
-and so on, then you are the agent the designer started from inside Figsnap's own
-Agent tab, and **none of the curl below applies to you**. Use those tools: they
-reach the same designs through the same plugin, without HTTP, without a token
-and without a response cap, and they are the only route that can change the file.
-The \`formats\` argument on \`figma_extract\` takes the same names as \`format\`
-below, and the rest of this file — which output to ask for, what each one is
-good for, and what will bite you — reads the same either way.
+There are three ways to reach the same open file, and only one of them applies
+to you. Work out which before reading further.
 
-Everything from here on is written for the other case: an agent working in a
-project, reading the designer's open file across the relay.
+**1. You have \`figma_*\` tools.** Check your tool list for
+\`figma_get_selection\`, \`figma_extract\`, \`figma_set_fill\`. If they are there,
+**use them and ignore every curl below**. They reach the same designs without
+HTTP, without a token and without a response cap, and they are the only route
+that can *change* the file. This is the case whether you are the agent the
+designer started inside the plugin's own Agent tab, or an agent in a terminal
+with the \`figsnap\` MCP server added. Skip to *Reading* and *Changing*.
+
+**2. You have no \`figma_*\` tools but could have.** If the user is asking you to
+change a design, or you need more than the relay can give, the tools are one
+command away on the machine running Figma:
+
+\`\`\`bash
+claude mcp add figsnap -- npx -y figsnap-mcp
+\`\`\`
+
+It needs no configuration: \`figsnap-agent\` listens on a fixed port and writes
+its token to \`~/.figsnap/agent-token\`, and the MCP server finds both. If the
+user has not started the daemon, tell them to run \`npx figsnap-agent\`. Suggest
+this rather than working around its absence — the relay cannot write.
+
+**3. Neither, and reading is enough.** Then the relay below is your route.
+
+The rest of this file applies to all three: which output to ask for, what each
+one is good for, and what will bite you. Only the *calls* differ —
+\`figma_extract\`'s \`formats\` argument takes the same names as \`format\` below.
 
 ## Always start here
 
@@ -151,6 +169,56 @@ Match the field to the job instead of pasting everything:
   gives you almost nothing.
 - **Checking existing code against the design**: \`png.url\` plus \`css\`.
 
+## Changing the design
+
+Only the \`figma_*\` tools can write; the relay has no route that does. Two gates
+stand in front of them, and neither is yours to open:
+
+- **Edits** in the plugin's Agent column decides whether the canvas can be
+  touched at all. It is enforced by the daemon, so a refusal reading *"editing
+  the file is switched off"* means the designer has to tick it — say so and stop,
+  rather than looking for another way in.
+- Whether you are asked before each change is the harness's own business.
+
+Every call is one undo step, so the designer takes any single change back with
+one Cmd-Z. Before a run that will change several things, call
+\`figma_save_version\` first: it leaves one named point to fall back to instead of
+a stack of undos.
+
+**Read the design system before changing anything.** \`figma_list_library\` returns
+the components, styles and variables this file has, with their ids. Then:
+
+- \`figma_apply_style\` for a colour or type that has a named style
+- \`figma_bind_variable\` for a value that has a token
+- \`figma_create_instance\` rather than drawing a lookalike
+
+A hex code you picked will look right today and be wrong after the next
+redesign; a style or a variable follows the system. Reach for \`figma_set_fill\`
+with a literal colour only when the file has nothing named for it.
+
+The rest, briefly. Making: \`figma_create_frame\`, \`figma_create_text\`,
+\`figma_create_rectangle\`, \`figma_create_ellipse\`, \`figma_create_svg\` (real
+editable vectors, which is how an icon gets drawn), \`figma_clone_node\`. Moving:
+\`figma_move_node\`, \`figma_delete_node\`. Changing: \`figma_set_fill\`,
+\`figma_set_stroke\`, \`figma_set_text\`, \`figma_set_text_style\`,
+\`figma_set_bounds\`, \`figma_set_corner_radius\`, \`figma_set_effects\`,
+\`figma_set_visibility\`, \`figma_set_node_name\`, \`figma_set_auto_layout\`,
+\`figma_set_layout_sizing\`.
+
+Three that catch people out:
+
+- **Borders are strokes, not fills.** A row outline needs \`figma_set_stroke\`.
+- **Inside auto layout, position and width are the parent's business.**
+  \`figma_set_bounds\` is ignored there; \`figma_set_layout_sizing\` with HUG, FILL
+  or FIXED is how a child is sized.
+- **Text needs its font.** A layer whose font this machine does not have is
+  refused rather than silently retyped in a substitute — that is a real answer,
+  not a bug to route around.
+
+After a change, \`figma_export_png\` is how you check it landed rather than
+assuming. \`figma_set_fill\` and \`figma_set_stroke\` also read the colour back off
+the node and return it, so a write that did not take is visible without looking.
+
 ## Things that will bite you
 
 - **Instances are opaque by default.** Text and styling inside a component do not
@@ -182,9 +250,16 @@ description: Pulls designs out of the open Figma file through the Figsnap relay 
 tools: Bash, Read, Write
 ---
 
-You read designs out of a running Figma plugin through a relay at
-\`${httpBase}\` and report back concisely. Your value is that the raw responses,
-which run to tens of kilobytes each, stay out of the caller's context.
+You read designs out of a running Figma plugin and report back concisely. Your
+value is that the raw responses, which run to tens of kilobytes each, stay out of
+the caller's context.
+
+If you have \`figma_*\` tools, use them: \`figma_get_selection\`,
+\`figma_get_children\`, \`figma_extract\` and \`figma_export_png\` do everything
+below without HTTP or a token, and \`figma_extract\`'s \`formats\` argument takes
+the same names as \`format\`. Otherwise the relay at \`${httpBase}\` is your route,
+and the method is the same either way. **You read; you never write** — leave any
+\`figma_set_*\` or \`figma_create_*\` tool alone even where you have one.
 
 ## Method
 
