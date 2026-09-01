@@ -2275,7 +2275,15 @@ window.addEventListener('resize', () => {
 // single line per stretch of work. In a 400px column that is the difference
 // between a conversation and a log file.
 
-type AgentHarness = { id: string; name: string; command: string; available: boolean; note: string }
+type AgentHarness = {
+  id: string
+  name: string
+  command: string
+  available: boolean
+  note: string
+  /** Why not, when it is not available. Absent from daemons older than this field. */
+  reason?: string
+}
 
 type AgentMode = { id: string; name: string; description?: string | null }
 
@@ -3030,7 +3038,7 @@ function refreshAgentHarnesses() {
     note.textContent =
       agentStatus !== 'open'
         ? 'Connect to see what this machine can launch.'
-        : 'No harness found. Install Claude Code, Codex or the Gemini CLI, sign in to it once, then restart the daemon.'
+        : 'No harness found. Install Claude Code, Codex or the Gemini CLI and sign in to it once — or set DEEPSEEK_API_KEY — then restart the daemon.'
     agentHarnessChips.appendChild(note)
     if (agentHarnesses.length === 0) return
   }
@@ -3038,7 +3046,8 @@ function refreshAgentHarnesses() {
     const chip = document.createElement('button')
     chip.type = 'button'
     chip.className = `chip${harness.id === agentHarnessId ? ' current' : ''}`
-    chip.textContent = harness.available ? harness.name : `${harness.name} — not installed`
+    // An older daemon sends no reason, and the only one it had was this.
+    chip.textContent = harness.available ? harness.name : `${harness.name} — ${harness.reason ?? 'not installed'}`
     chip.title = harness.available ? harness.command : harness.note
     chip.disabled = !harness.available || agentSession.harness !== null
     chip.addEventListener('click', () => {

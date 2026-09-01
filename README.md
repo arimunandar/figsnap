@@ -344,12 +344,53 @@ npm run agent          # or, once published: npx figsnap-agent
 ```
 
 It prints a token, its port, and the harnesses it found. It looks for `claude`,
-`codex` and `gemini` on your `PATH`; each brings its own login and billing, and
-this plugin never sees a model key. To use something else, name it yourself:
+`codex` and `gemini` on your `PATH`, plus a **DeepSeek** row described below;
+each brings its own login and billing, and this plugin never sees a model key.
+To use something else, name it yourself:
 
 ```bash
 FIGSNAP_AGENT_COMMAND='npx -y @agentclientprotocol/some-adapter' npm run agent
 ```
+
+#### DeepSeek
+
+DeepSeek's endpoint is Anthropic-compatible, so the DeepSeek row is the Claude
+Code row pointed somewhere else: same CLI, same ACP adapter, no code of its own.
+It needs two things — the `claude` CLI on your `PATH`, and a key in the daemon's
+own environment:
+
+```bash
+DEEPSEEK_API_KEY=sk-… npm run agent
+```
+
+Without the key the chip reads **DeepSeek — DEEPSEEK_API_KEY is not set** and
+stays disabled; Claude Code, which uses your Claude login rather than this key,
+is unaffected. The key lives only in the daemon's environment: it is never
+written to the repo, and never leaves the daemon — the list the panel receives
+carries `id`, `name`, `command`, `available`, `note` and `reason`, and nothing
+else.
+
+Three variables override the defaults, which are DeepSeek's names as of today
+and will drift:
+
+| Variable | Default |
+| --- | --- |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash-vision-exp[1m]` |
+| `DEEPSEEK_FAST_MODEL` | `deepseek-v4-flash` |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/anthropic` |
+
+`DEEPSEEK_MODEL` defaults to the vision variant on purpose: the panel attaches a
+PNG of the canvas, and a model that cannot look at one ends up answering about a
+picture it never saw. `DEEPSEEK_FAST_MODEL` covers the small slots — subagents
+and the Haiku-shaped work — so set it to the vision model too if you want those
+to see pictures as well.
+
+A wrong model id or base URL fails at the first turn, loudly: the harness's own
+stderr arrives in the transcript as a notice.
+
+The same trick reaches any other provider without a row here — point
+`FIGSNAP_AGENT_COMMAND` at the Claude or Codex adapter with that provider's
+Anthropic- or OpenAI-compatible base URL and key exported alongside it.
 
 **2. Open the plugin.** The third column is the chat — it takes the place of the
 generated code, so the layer tree and the preview stay beside it. The **Code**
@@ -650,7 +691,7 @@ figsnap-agent 0.1.0
   panel socket   ws://127.0.0.1:3056/panel
   http           http://127.0.0.1:3056
   token          <48 characters>
-  harnesses      Claude Code, Codex
+  harnesses      Claude Code, Codex, DeepSeek
   edits          off — turn them on in the plugin, or start with --allow-edits
   account        none — optional; `figsnap-agent login` to attach one
 ```

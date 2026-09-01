@@ -352,7 +352,7 @@ server.listen(PORT, HOST, async () => {
   console.log(`  token          ${TOKEN}`)
   console.log(
     found.length === 0
-      ? '  harnesses      none found — install Claude Code, Codex or the Gemini CLI'
+      ? '  harnesses      none found — install Claude Code, Codex or the Gemini CLI, or set DEEPSEEK_API_KEY'
       : `  harnesses      ${found.map((harness) => harness.name).join(', ')}`,
   )
   console.log(
