@@ -359,6 +359,42 @@ check('an unclosed fence still renders while it streams',
 
 await agentClear()
 
+// ------------------------------------------------------------------ base64
+//
+// A model handed an image sometimes writes it back out, and an adapter that
+// stringifies a tool result inlines the whole thing. Either way it is tens of
+// kilobytes of noise in a 400px column.
+
+const PIXEL =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+const bulk = `${'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5eg'.repeat(12)}==`
+
+chunk('agent_message_chunk', `Here it is: ${bulk} — done.`)
+await settle()
+check('a wall of base64 is folded away, not printed',
+  /\[\d+ kB of base64\]/.test(answer()?.textContent ?? '') && !(answer()?.textContent ?? '').includes(bulk),
+  (answer()?.textContent ?? '').slice(0, 80))
+
+await agentClear()
+chunk('agent_message_chunk', `![the frame](data:image/png;base64,${PIXEL})`)
+await settle()
+check('a picture written as Markdown is shown as one',
+  answer()?.querySelector('.md-image')?.getAttribute('src')?.startsWith('data:image/png') === true)
+
+await agentClear()
+update({
+  sessionUpdate: 'tool_call',
+  toolCallId: 'shot',
+  title: 'figma_export_png',
+  status: 'completed',
+  content: [{ type: 'content', content: { type: 'text', text: `data:image/png;base64,${PIXEL}` } }],
+})
+await settle()
+check('and so is one an adapter stringified into a tool result',
+  id('agent-log').querySelector('.tool-content img') !== null)
+
+await agentClear()
+
 // ---------------------------------------------------------------- streaming
 
 chunk('agent_thought_chunk', 'looking at ')

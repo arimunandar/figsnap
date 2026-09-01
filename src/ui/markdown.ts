@@ -144,7 +144,30 @@ function parse(source: string): Block[] {
   return blocks
 }
 
-const INLINE = /(`+)([\s\S]*?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|(?<![\w*])\*([^*\n]+)\*(?![\w*])|~~([\s\S]+?)~~|\[([^\]]+)\]\(([^)\s]+)\)/
+/**
+ * Base64 has no business being read.
+ *
+ * A model handed an image sometimes writes it back out, and an adapter
+ * stringifying a tool result will inline the whole thing. Either way it is tens
+ * of kilobytes of noise in a 400px column. A data URI for an image becomes the
+ * image; anything else long enough to be a payload is named and folded away.
+ */
+const DATA_IMAGE = /data:image\/[a-z+.-]+;base64,[A-Za-z0-9+/=]+/gi
+const LONG_BASE64 = /[A-Za-z0-9+/]{512,}={0,2}/g
+
+export function scrubBase64(text: string): string {
+  return text
+    .replace(DATA_IMAGE, (match) => `[image, ${Math.round((match.length * 3) / 4 / 1024)} kB]`)
+    .replace(LONG_BASE64, (match) => `[${Math.round((match.length * 3) / 4 / 1024)} kB of base64]`)
+}
+
+/** A lone data URI, when the whole of something is one. */
+export function loneDataImage(text: string): string | null {
+  const trimmed = text.trim()
+  return /^data:image\/[a-z+.-]+;base64,[A-Za-z0-9+/=]+$/i.test(trimmed) ? trimmed : null
+}
+
+const INLINE = /(`+)([\s\S]*?)\1|!?\[([^\]]*)\]\((data:[^)\s]+|[^)\s]+)\)|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|(?<![\w*])\*([^*\n]+)\*(?![\w*])|~~([\s\S]+?)~~/
 
 /** Emphasis, code spans and links, into real nodes rather than markup. */
 function inline(text: string, into: Node) {
@@ -152,40 +175,51 @@ function inline(text: string, into: Node) {
   for (;;) {
     const match = INLINE.exec(rest)
     if (match === null || match.index === undefined) break
-    if (match.index > 0) into.appendChild(document.createTextNode(rest.slice(0, match.index)))
+    if (match.index > 0) into.appendChild(document.createTextNode(scrubBase64(rest.slice(0, match.index))))
 
     if (match[2] !== undefined) {
       const code = document.createElement('code')
-      code.textContent = match[2].trim()
+      code.textContent = scrubBase64(match[2].trim())
       into.appendChild(code)
-    } else if (match[3] !== undefined || match[4] !== undefined) {
-      const strong = document.createElement('strong')
-      inline(match[3] ?? match[4], strong)
-      into.appendChild(strong)
-    } else if (match[5] !== undefined) {
-      const em = document.createElement('em')
-      inline(match[5], em)
-      into.appendChild(em)
-    } else if (match[6] !== undefined) {
-      const del = document.createElement('del')
-      inline(match[6], del)
-      into.appendChild(del)
-    } else if (match[7] !== undefined) {
-      // Only http(s): a model writing javascript: into a link should not get one.
-      const safe = /^https?:\/\//i.test(match[8])
-      const node = document.createElement(safe ? 'a' : 'span')
-      if (safe) {
-        ;(node as HTMLAnchorElement).href = match[8]
-        node.setAttribute('target', '_blank')
-        node.setAttribute('rel', 'noreferrer')
+    } else if (match[4] !== undefined) {
+      const isImage = match[0].startsWith('!')
+      const target = match[4]
+      // A picture is shown; a link is only followed when it is http(s), because
+      // a model writing javascript: into one should not get a live link.
+      if (isImage && /^data:image\/|^https?:\/\//i.test(target)) {
+        const image = document.createElement('img')
+        image.className = 'md-image'
+        image.src = target
+        image.alt = match[3] ?? ''
+        image.addEventListener('error', () => image.remove())
+        into.appendChild(image)
+      } else if (!isImage && /^https?:\/\//i.test(target)) {
+        const link = document.createElement('a')
+        link.href = target
+        link.setAttribute('target', '_blank')
+        link.setAttribute('rel', 'noreferrer')
+        inline(match[3] ?? target, link)
+        into.appendChild(link)
+      } else {
+        into.appendChild(document.createTextNode(scrubBase64(match[3] ?? '')))
       }
-      inline(match[7], node)
-      into.appendChild(node)
+    } else if (match[5] !== undefined || match[6] !== undefined) {
+      const strong = document.createElement('strong')
+      inline(match[5] ?? match[6], strong)
+      into.appendChild(strong)
+    } else if (match[7] !== undefined) {
+      const em = document.createElement('em')
+      inline(match[7], em)
+      into.appendChild(em)
+    } else if (match[8] !== undefined) {
+      const del = document.createElement('del')
+      inline(match[8], del)
+      into.appendChild(del)
     }
 
     rest = rest.slice(match.index + match[0].length)
   }
-  if (rest !== '') into.appendChild(document.createTextNode(rest))
+  if (rest !== '') into.appendChild(document.createTextNode(scrubBase64(rest)))
 }
 
 function codeBlock(language: string, lines: string[]): HTMLElement {
@@ -195,7 +229,7 @@ function codeBlock(language: string, lines: string[]): HTMLElement {
   const known = ['tsx', 'ts', 'jsx', 'js', 'javascript', 'typescript'].indexOf(language) !== -1
   const dialect = known ? 'tsx' : language === 'html' ? 'html' : language === 'css' ? 'css' : null
   if (dialect === null) {
-    code.textContent = lines.join('\n')
+    code.textContent = scrubBase64(lines.join('\n'))
   } else {
     // Already escaped by the highlighter; only its own spans are markup.
     code.innerHTML = highlightLines(lines.join('\n'), dialect).join('\n')

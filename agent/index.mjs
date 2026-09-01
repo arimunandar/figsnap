@@ -115,6 +115,10 @@ wss.on('connection', (socket, req) => plugin.handleConnection(socket, req))
 // everything the chat itself needs, in one vocabulary rather than a second socket.
 
 async function onPanelFrame(message) {
+  // Every frame the panel sends, named. When something in the panel does not
+  // reach here, that is the difference between a broken button and a broken
+  // daemon, and there is no other way to tell them apart from this side.
+  log(`panel: ${message.kind ?? 'unknown'}`)
   try {
     switch (message.kind) {
       case 'hello':

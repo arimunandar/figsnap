@@ -1967,6 +1967,14 @@ select:focus {
   color: var(--figma-color-text-brand, #0d99ff);
 }
 
+.md-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  margin: 8px 0;
+  border-radius: 8px;
+}
+
 /* ------------------------------------------------------------ attachments */
 
 .preview-actions {

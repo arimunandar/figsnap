@@ -2,7 +2,7 @@
 import './style.css'
 import { createBridge, type BridgeStatus } from './bridge'
 import { highlightLines } from './highlight'
-import { renderMarkdown } from './markdown'
+import { loneDataImage, renderMarkdown, scrubBase64 } from './markdown'
 import { groups as apiGroups, curlFor, requestHeaders, type Endpoint } from '../../shared/endpoints.mjs'
 import { AGENT_URL, DEFAULT_RELAY_URL, HOSTED_RELAY_URL } from '../relays'
 
@@ -2496,6 +2496,15 @@ function agentContentText(content: unknown): string {
   return `[${block.type ?? 'content'}]`
 }
 
+/** A replayed message can carry the picture that went with it the first time. */
+function agentContentImage(content: unknown): string | null {
+  const block = content as { type?: string; data?: string; mimeType?: string; text?: string } | undefined
+  if (block?.type === 'image' && typeof block.data === 'string' && block.data !== '') {
+    return `data:${block.mimeType ?? 'image/png'};base64,${block.data}`
+  }
+  return typeof block?.text === 'string' ? loneDataImage(block.text) : null
+}
+
 /** A render that will not decode leaves nothing behind, not its alt text. */
 function shotImage(src: string): HTMLImageElement {
   const image = document.createElement('img')
@@ -2641,7 +2650,7 @@ function toolEvidence(content: unknown[]): HTMLDivElement | null {
       head.className = 'head'
       head.textContent = 'Terminal'
       const body = document.createElement('pre')
-      body.textContent = snapshot?.output ?? 'Running…'
+      body.textContent = scrubBase64(snapshot?.output ?? 'Running…')
       card.append(head, body)
       const code = snapshot?.exitStatus?.exitCode
       if (code !== undefined && code !== null) {
@@ -2666,8 +2675,19 @@ function toolEvidence(content: unknown[]): HTMLDivElement | null {
     if (block?.type === 'content' && block.content?.type === 'text' && typeof block.content.text === 'string') {
       const card = document.createElement('div')
       card.className = 'tool-content'
+      // An adapter that stringifies a tool result hands back the whole image as
+      // text. Shown as the picture it is, rather than as its bytes.
+      const lone = loneDataImage(block.content.text)
+      if (lone !== null) {
+        const image = document.createElement('img')
+        image.src = lone
+        image.alt = 'Returned by the tool'
+        image.addEventListener('error', () => image.remove())
+        card.appendChild(image)
+        return card
+      }
       const body = document.createElement('pre')
-      body.textContent = block.content.text
+      body.textContent = scrubBase64(block.content.text)
       card.appendChild(body)
       return card
     }
@@ -2754,7 +2774,7 @@ function agentEvent(level: string, text: string) {
   rule.className = 'rule'
   const body = document.createElement('span')
   body.className = 'text'
-  body.textContent = text
+  body.textContent = scrubBase64(text)
   block.append(rule, body)
   if (level === 'auto') {
     const undo = document.createElement('button')
@@ -2819,9 +2839,12 @@ function handleAgentFrame(message: Record<string, unknown>) {
     case 'update': {
       const update = (message.update ?? {}) as Record<string, unknown>
       switch (update.sessionUpdate) {
-        case 'user_message_chunk':
-          agentUserMessage(agentContentText(update.content))
+        case 'user_message_chunk': {
+          const shot = agentContentImage(update.content)
+          if (shot !== null) agentAppend(shotImage(shot))
+          else agentUserMessage(agentContentText(update.content))
           break
+        }
         case 'agent_message_chunk':
           agentSay(agentContentText(update.content))
           break

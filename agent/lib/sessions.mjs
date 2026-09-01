@@ -136,8 +136,11 @@ export function createSessionStore({ log }) {
       for (const info of listed) {
         const entry = records.find((record) => record.id === info.sessionId)
         if (entry === undefined) continue
-        if (typeof info.title === 'string' && info.title !== '' && info.title !== entry.title) {
-          entry.title = info.title
+        // Trimmed the same way a local one is. Codex hands back the whole first
+        // message as the title, context block and all, which is not a title.
+        const title = info.title === undefined || info.title === null ? '' : titleFrom(info.title)
+        if (title !== '' && title !== 'Untitled' && title !== entry.title) {
+          entry.title = title
           changed = true
         }
         const when = info.updatedAt === undefined || info.updatedAt === null ? null : Date.parse(info.updatedAt)
