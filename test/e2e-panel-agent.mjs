@@ -152,6 +152,8 @@ check('a stale replacement close is ignored', id('agent-dot').className === 'dot
 id('agent-more').click()
 await settle()
 check('the session menu opens', id('agent-more-menu').hidden === false)
+// Nothing to end yet, so the menu does not offer it.
+check('and offers nothing that cannot happen yet', id('agent-stop').hidden === true)
 id('agent-setup-link').click()
 await settle()
 check('Setup opens the pairing page', id('agent-page').hidden === false)
@@ -218,7 +220,7 @@ await settle()
 check('a session reveals the chat', id('agent-chat').hidden === false && id('agent-idle').hidden === true)
 check('and the strip names the session and its directory',
   id('agent-session').textContent === 'Claude Code · designer', id('agent-session').textContent)
-check('and the start button gives way to End', id('agent-start').hidden === true && id('agent-stop').disabled === false)
+check('and the start button gives way to End', id('agent-start').hidden === true && id('agent-stop').hidden === false)
 check('the session id is stored, so a torn-down runtime can resume', lastStored()?.sessionId === 's1')
 
 // ---------------------------------------------------------------- context
@@ -538,6 +540,45 @@ check('and says which harness and folder it belongs to',
   rows()[1].querySelector('.about').textContent === 'Codex · checkout-app · Checkout · yesterday',
   rows()[1].querySelector('.about').textContent)
 check('the one in use is marked', rows()[0].classList.contains('current'))
+
+// Which conversation is current is part of what the list shows, so ending one
+// has to refresh it — from both sides, since either can be the slower.
+received.length = 0
+id('agent-more').click()
+await settle()
+id('agent-stop').click()
+await settle()
+check('ending a session asks for the list again',
+  sawFrame('stop') !== undefined && sawFrame('sessions') !== undefined)
+
+push({ kind: 'state', harness: null, sessionId: null, cwd: '/Users/designer/work', running: false, writes: false, auto: true, connected: true })
+push({
+  kind: 'sessions',
+  sessions: [
+    { id: 's2', harness: 'claude', harnessName: 'Claude Code', cwd: '/Users/designer/work',
+      file: 'Bonds', title: 'make the CTA match our button', updatedAt: Date.now() - 60_000 },
+  ],
+})
+await settle()
+id('agent-more').click()
+await settle()
+id('agent-history-open').click()
+await settle()
+check('the conversation that just ended is still listed', rows().length === 1)
+check('but no longer marked as the one in use', rows()[0].classList.contains('current') === false)
+
+// Put a session back for what follows.
+push({
+  kind: 'state',
+  harness: { id: 'claude', name: 'Claude Code' },
+  sessionId: 's2',
+  cwd: '/Users/designer/work',
+  running: false,
+  writes: false,
+  auto: true,
+  connected: true,
+})
+await settle()
 
 // A harness that is no longer installed cannot reopen anything, and saying so
 // on the row beats failing on the click — which is exactly what happened when a

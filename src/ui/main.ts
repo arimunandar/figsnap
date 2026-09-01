@@ -3155,8 +3155,9 @@ function refreshAgentPage() {
 
   const live = agentSession.sessionId !== null
   agentStartButton.hidden = live
-  agentStopButton.disabled = !live
-  agentStopButton.title = live ? '' : 'No session to end'
+  // Gone rather than greyed: a menu of three things where one cannot happen is
+  // a menu that has to be read twice.
+  agentStopButton.hidden = !live
   agentStartButton.disabled = agentStatus !== 'open' || agentHarnessId === '' || agentCwd === ''
   // A transcript with something in it is worth showing whether or not a session
   // is running: an error explaining why one did not start lands there, and
