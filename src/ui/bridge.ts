@@ -1,8 +1,13 @@
-// WebSocket link from the plugin UI to the local relay.
+// WebSocket link from the plugin UI to a server outside Figma.
 //
-// Only the UI thread has a real WebSocket, so it acts as the proxy: the relay
+// Only the UI thread has a real WebSocket, so it acts as the proxy: the far end
 // sends a command, the UI asks the main thread for the data, and the reply goes
 // back out over the same socket.
+//
+// Two servers use it. The relay carries designs out to an agent in a project;
+// the agent daemon carries a conversation in. They speak the same frames, and
+// the only difference here is `onFrame`, which the daemon needs and the relay
+// never fires.
 
 export type BridgeStatus = 'off' | 'connecting' | 'open' | 'retrying'
 
@@ -12,6 +17,15 @@ type BridgeOptions = {
   request: (command: string, params: Record<string, unknown>) => Promise<unknown>
   /** The relay refused the token, so the session is over and only signing in fixes it. */
   onRejected?: () => void
+  /**
+   * Every frame that parses, before the request handling below decides it is
+   * not interested. The relay only ever sends requests, so this changes nothing
+   * for it; the agent daemon on the same transport also streams a conversation,
+   * and this is where the panel picks that up.
+   */
+  onFrame?: (message: Record<string, unknown>) => void
+  /** Names the far end in the messages a terminal close produces. */
+  label?: string
 }
 
 const FIRST_RETRY_MS = 1_000
@@ -24,14 +38,19 @@ const PING_EVERY_MS = 25_000
 const SILENCE_LIMIT_MS = PING_EVERY_MS * 2 + 5_000
 
 /**
- * Close codes the relay uses deliberately. Retrying either one is worse than
+ * Close codes the server uses deliberately. Retrying either one is worse than
  * stopping: reconnecting after being replaced makes two plugin windows kick each
  * other in a loop, and reconnecting with a rejected token just repeats it.
+ *
+ * The same three codes come from the relay and from the agent daemon, so the
+ * side that opened the socket names itself rather than being assumed.
  */
-const TERMINAL_CLOSE: Record<number, string> = {
-  4000: 'Another plugin window has the connection. Close the other one, then press Reconnect.',
-  4001: 'The relay rejected the token. Check it in the relay settings.',
-  4002: 'The relay refused another reconnection. Close the duplicate plugin window, then press Reconnect.',
+function terminalClose(who: string): Record<number, string> {
+  return {
+    4000: 'Another plugin window has the connection. Close the other one, then press Reconnect.',
+    4001: `The ${who} rejected the token. Check it in the settings.`,
+    4002: `The ${who} refused another reconnection. Close the duplicate plugin window, then press Reconnect.`,
+  }
 }
 
 /** PNG bytes cross the socket as base64; chunked so the argument list stays sane. */
@@ -104,18 +123,32 @@ export function createBridge(options: BridgeOptions) {
   function open() {
     if (!enabled) return
     clearRetry()
+    // A socket already in hand is replaced, not joined: two live sockets from
+    // one panel make the server kick one of them, and the kicked one's own
+    // close handling would then speak for the survivor.
+    if (socket !== null) {
+      const previous = socket
+      socket = null
+      previous.close(1000, 'Replaced by a fresh connection from this panel')
+    }
     options.onStatus('connecting')
 
     let next: WebSocket
     try {
       next = new WebSocket(options.url())
     } catch (error) {
-      scheduleRetry(error instanceof Error ? error.message : 'Bad relay URL')
+      scheduleRetry(error instanceof Error ? error.message : `Bad ${options.label ?? 'relay'} address`)
       return
     }
     socket = next
 
     next.addEventListener('open', () => {
+      // A socket that finished connecting after being superseded has nothing to
+      // say; every handler below asks the same question first.
+      if (socket !== next) {
+        next.close(1000, 'Superseded before it opened')
+        return
+      }
       retryMs = FIRST_RETRY_MS
       startPinging(next)
       options.onStatus('open')
@@ -130,6 +163,7 @@ export function createBridge(options: BridgeOptions) {
       } catch {
         return
       }
+      options.onFrame?.(message as Record<string, unknown>)
       if (message.kind !== 'request' || !message.id || !message.command) return
 
       try {
@@ -148,13 +182,18 @@ export function createBridge(options: BridgeOptions) {
     })
 
     next.addEventListener('close', (event: CloseEvent) => {
-      if (socket === next) socket = null
+      // Not the socket in use any more: its close says nothing about the one
+      // that is. Reporting it would stop the live socket's keepalive, or —
+      // when the server closed it as a replacement — declare the whole bridge
+      // off while it is in fact connected.
+      if (socket !== next) return
+      socket = null
       stopPinging()
       if (!enabled) {
         options.onStatus('off')
         return
       }
-      const terminal = TERMINAL_CLOSE[event.code]
+      const terminal = terminalClose(options.label ?? 'relay')[event.code]
       if (terminal) {
         enabled = false
         clearRetry()
@@ -168,7 +207,10 @@ export function createBridge(options: BridgeOptions) {
     })
 
     // A refused connection fires error then close; close does the retry.
-    next.addEventListener('error', () => options.onStatus('retrying', 'Relay unreachable'))
+    next.addEventListener('error', () => {
+      if (socket !== next) return
+      options.onStatus('retrying', `The ${options.label ?? 'relay'} is unreachable`)
+    })
   }
 
   return {
@@ -189,6 +231,12 @@ export function createBridge(options: BridgeOptions) {
       if (socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ kind: 'event', event: name, data }))
       }
+    },
+    /** A frame of the caller's own shape. Dropped, not queued, when closed. */
+    send(frame: Record<string, unknown>): boolean {
+      if (socket?.readyState !== WebSocket.OPEN) return false
+      socket.send(JSON.stringify(frame))
+      return true
     },
     isOpen() {
       return socket?.readyState === WebSocket.OPEN

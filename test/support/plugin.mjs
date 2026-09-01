@@ -53,6 +53,10 @@ export function makeNode(id, name, type = 'FRAME', children = [], css = { width:
     fills: [],
     strokes: [],
     strokeWeight: 1,
+    appendChild(child) {
+      child.parent = node
+      node.children.push(child)
+    },
     strokeAlign: 'INSIDE',
     effects: [],
     children,
@@ -73,6 +77,10 @@ export function makeNode(id, name, type = 'FRAME', children = [], css = { width:
           textCase: 'ORIGINAL',
           textDecoration: 'NONE',
           textAutoResize: 'NONE',
+          hasMissingFont: false,
+          getRangeAllFontNames() {
+            return [{ family: 'Inter', style: 'Regular' }]
+          },
         }
       : {}),
     async getCSSAsync() {
@@ -111,7 +119,18 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
   let toPanel = () => {}
 
   // Figma always sets parent; the Figma-CSS renderer reads it on the root.
-  const page = { id: 'p1', name: 'Page 1', type: 'PAGE', children: pageChildren, selection: [], parent: null }
+  const page = {
+    id: 'p1',
+    name: 'Page 1',
+    type: 'PAGE',
+    children: pageChildren,
+    selection: [],
+    parent: null,
+    appendChild(child) {
+      child.parent = page
+      pageChildren.push(child)
+    },
+  }
   for (const child of pageChildren) child.parent = page
 
   const figma = {
@@ -133,6 +152,30 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
     ui: { onmessage: null, postMessage: (message) => toPanel(message), resize() {} },
     showUI() {},
     on() {},
+    // The write side of the API. `commitUndo` is what puts a plugin's changes in
+    // undo history at all, so a suite that never sees it called is looking at an
+    // edit the designer could not take back.
+    undos: [],
+    commitUndo() {
+      figma.undos.push(Date.now())
+    },
+    versions: [],
+    async saveVersionHistoryAsync(title, description) {
+      figma.versions.push({ title, description })
+      return { id: `v${figma.versions.length}` }
+    },
+    async loadFontAsync() {},
+    createFrame() {
+      let created = 0
+      created = nodes.size
+      const frame = makeNode(`new:${created}`, 'Frame')
+      frame.resize = (width, height) => {
+        frame.width = width
+        frame.height = height
+      }
+      nodes.set(frame.id, frame)
+      return frame
+    },
     closePlugin() {},
     openExternal() {},
     notify() {},
@@ -155,7 +198,11 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
   // The panel's job, reduced to what a relay request needs: hand the command to
   // the main thread and send its answer back.
   const pending = new Map()
+  // Everything the main thread pushes at the panel, so a suite can assert on
+  // what the designer would have seen and not only on what a caller was told.
+  const toPanelMessages = []
   toPanel = (message) => {
+    toPanelMessages.push(message)
     if (message.type !== 'res') return
     const relayId = pending.get(message.id)
     if (relayId === undefined) return
@@ -189,6 +236,7 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
     figma,
     storage,
     nodes,
+    panelMessages: toPanelMessages,
     base,
     token,
     headers,

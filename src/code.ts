@@ -1,6 +1,6 @@
 // Main thread: full access to the figma API, no DOM and no network.
 import { renderFigmaCss } from './figma-css'
-import { DEFAULT_RELAY_URL } from './relays'
+import { AGENT_URL, DEFAULT_RELAY_URL } from './relays'
 
 const MAX_LAYERS = 500
 const MAX_BATCH = 20
@@ -72,6 +72,7 @@ type ToUI =
   | { type: 'thumb'; id: string | null; png: Uint8Array | null }
   | { type: 'sync'; fileId: string; folders: string[]; entries: SavedEntry[]; updatedAt: number }
   | { type: 'settings'; url: string; token: string; email: string; profiles: Profile[] }
+  | { type: 'agent-settings'; url: string; token: string; cwd: string; harness: string; sessionId: string; writes: boolean; auto: boolean }
 
 type FromUI =
   | { type: 'ready' }
@@ -96,6 +97,7 @@ type FromUI =
   | { type: 'resize'; width: number; height: number }
   | { type: 'minimise'; on: boolean }
   | { type: 'save-settings'; url: string; token: string; email?: string }
+  | { type: 'save-agent-settings'; url: string; token: string; cwd: string; harness: string; sessionId: string; writes: boolean; auto: boolean }
   | { type: 'sign-out' }
   | { type: 'open-url'; url: string }
   | { type: 'forget-relay'; url: string }
@@ -1346,6 +1348,75 @@ async function sendSettings(): Promise<void> {
   send({ type: 'settings', ...(await readSettings()) })
 }
 
+// The agent daemon runs on this machine, so its address, token and working
+// directory belong to the machine rather than the file, like the relay's.
+//
+// The session id is the odd one out: it is per conversation, and it is stored
+// because Figma can take the plugin's runtime away mid-answer. Handing it back
+// on reopen lets `session/load` replay what was said instead of starting over.
+const AGENT_KEY = 'agent-settings'
+
+type AgentSettings = {
+  url: string
+  token: string
+  cwd: string
+  harness: string
+  sessionId: string
+  // The two switches that decide what the agent may do without being asked.
+  // Kept here rather than in the daemon, which forgets them when it restarts.
+  writes: boolean
+  auto: boolean
+}
+
+const NO_AGENT: AgentSettings = {
+  url: AGENT_URL,
+  token: '',
+  cwd: '',
+  harness: '',
+  sessionId: '',
+  writes: false,
+  auto: true,
+}
+
+async function readAgentSettings(): Promise<AgentSettings> {
+  try {
+    const stored = await figma.clientStorage.getAsync(AGENT_KEY)
+    if (stored && typeof stored === 'object') {
+      const settings = stored as Record<string, unknown>
+      const text = (key: keyof AgentSettings, fallback: string) =>
+        typeof settings[key] === 'string' && settings[key] !== '' ? (settings[key] as string) : fallback
+      return {
+        url: text('url', AGENT_URL),
+        token: text('token', ''),
+        cwd: text('cwd', ''),
+        harness: text('harness', ''),
+        sessionId: text('sessionId', ''),
+        writes: settings.writes === true,
+        // Absent means settings written before this switch existed.
+        auto: settings.auto !== false,
+      }
+    }
+  } catch {
+    // Nothing stored means a first run, which is the defaults.
+  }
+  return { ...NO_AGENT }
+}
+
+async function sendAgentSettings(): Promise<void> {
+  send({ type: 'agent-settings', ...(await readAgentSettings()) })
+}
+
+async function saveAgentSettings(next: AgentSettings): Promise<void> {
+  try {
+    await figma.clientStorage.setAsync(AGENT_KEY, next)
+  } catch (error) {
+    send({
+      type: 'error',
+      message: `Could not save agent settings: ${error instanceof Error ? error.message : String(error)}`,
+    })
+  }
+}
+
 async function saveSettings(url: string, token: string, email: string): Promise<void> {
   const previous = await readSettings()
   const profiles = [{ url, token, email }, ...previous.profiles.filter((entry) => entry.url !== url)].slice(
@@ -1693,6 +1764,238 @@ function optionsFrom(params: Record<string, unknown>): ExtractOptions {
   }
 }
 
+// ------------------------------------------------------------------- writing
+//
+// The first commands in this plugin that change the file rather than read it.
+// Three things hold for every one of them, which is why they share a section:
+//
+//  · A plugin's actions are not in undo history unless it says so, so each ends
+//    with `figma.commitUndo()`. One approved edit is then one Cmd-Z, rather
+//    than a run of them collapsing into whatever the user did before.
+//  · A node id from an agent is a guess until it has been resolved and its type
+//    checked. The error should say which of those two failed.
+//  · Nothing here is reachable until the daemon has been told the designer
+//    turned editing on; see `mutates` in agent/lib/tools.mjs.
+
+/**
+ * What every write ends with.
+ *
+ * `commitUndo` is what puts the change in undo history at all — a plugin's
+ * actions are not there by default — so one approved edit becomes one Cmd-Z.
+ * The re-extract is what makes the change visible: the panel's preview and code
+ * are a snapshot taken when the selection last changed, and an agent editing
+ * the file does not change the selection. Without this the canvas moves on and
+ * the panel goes on showing the design as it was, which reads as a broken edit.
+ *
+ * It is debounced, so a run of five fills costs one re-render rather than five.
+ */
+function afterMutation(structural = false): void {
+  figma.commitUndo()
+  if (structural) sendTree()
+  scheduleSelectionExtract()
+}
+
+/** The colour as a designer would read it back, for confirming an edit landed. */
+function toHex(color: RGB): string {
+  const part = (value: number) =>
+    Math.round(Math.max(0, Math.min(1, value)) * 255)
+      .toString(16)
+      .padStart(2, '0')
+  return `#${part(color.r)}${part(color.g)}${part(color.b)}`
+}
+
+/** Resolves a node and insists it is the kind of thing the caller assumed. */
+async function resolveFor(
+  id: unknown,
+  ok: (node: SceneNode) => boolean,
+  expected: string,
+): Promise<SceneNode> {
+  const node = await resolveScene(id)
+  if (!ok(node)) throw new Error(`${node.name} is a ${node.type}; ${expected}`)
+  return node
+}
+
+/** The daemon sends 0-1 triples; a hand-written call might not. */
+function readColor(value: unknown): RGB {
+  const raw = (value ?? {}) as Record<string, unknown>
+  const channel = (name: 'r' | 'g' | 'b'): number => {
+    const amount = Number(raw[name])
+    if (!Number.isFinite(amount) || amount < 0 || amount > 1) {
+      throw new Error(`color.${name} must be between 0 and 1, not ${String(raw[name])}`)
+    }
+    return amount
+  }
+  return { r: channel('r'), g: channel('g'), b: channel('b') }
+}
+
+function readNumber(value: unknown, name: string): number {
+  const amount = Number(value)
+  if (!Number.isFinite(amount)) throw new Error(`${name} must be a number, not ${String(value)}`)
+  return amount
+}
+
+/**
+ * Every font the node uses, loaded. The setter throws otherwise, and a font
+ * this machine does not have cannot be loaded at all — which is worth saying
+ * plainly, because the alternative is a layer silently retyped in a substitute.
+ */
+async function loadFontsOf(node: TextNode): Promise<void> {
+  if (node.hasMissingFont) {
+    throw new Error(`${node.name} uses a font this machine does not have, so its text cannot be changed`)
+  }
+  const fonts =
+    node.characters.length > 0
+      ? node.getRangeAllFontNames(0, node.characters.length)
+      : node.fontName === figma.mixed
+        ? []
+        : [node.fontName]
+  for (const font of fonts) await figma.loadFontAsync(font)
+}
+
+async function setFill(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveFor(params.nodeId, (candidate) => 'fills' in candidate, 'it has no fills to set')
+  const opacity = params.opacity === undefined ? 1 : readNumber(params.opacity, 'opacity')
+  const paint: SolidPaint = { type: 'SOLID', color: readColor(params.color), opacity }
+
+  // What is being thrown away is worth naming: one solid replacing a gradient
+  // or a photograph is a much bigger edit than the caller probably meant, and
+  // it will not be obvious from a thumbnail.
+  const before = (node as GeometryMixin).fills
+  const replaced =
+    before === figma.mixed ? 'mixed' : (before as readonly Paint[]).map((fill) => fill.type).join(', ')
+
+  ;(node as GeometryMixin).fills = [paint]
+  afterMutation()
+
+  // Read back rather than echo: an agent that cannot see the canvas has no
+  // other way to tell a refused write from a successful one.
+  const after = (node as GeometryMixin).fills
+  const applied = after !== figma.mixed && (after as readonly Paint[])[0]
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    replaced: replaced === '' ? 'nothing' : replaced,
+    fill: applied && applied.type === 'SOLID' ? toHex(applied.color) : null,
+  }
+}
+
+async function setStroke(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveFor(params.nodeId, (candidate) => 'strokes' in candidate, 'it has no strokes to set')
+  const target = node as GeometryMixin & { strokeWeight: number | typeof figma.mixed }
+
+  if (params.remove === true) {
+    target.strokes = []
+    afterMutation()
+    return { id: node.id, name: node.name, strokes: 0 }
+  }
+
+  const opacity = params.opacity === undefined ? 1 : readNumber(params.opacity, 'opacity')
+  target.strokes = [{ type: 'SOLID', color: readColor(params.color), opacity }]
+  if (params.weight !== undefined) {
+    const weight = readNumber(params.weight, 'weight')
+    if (weight < 0) throw new Error('weight cannot be negative')
+    target.strokeWeight = weight
+  }
+  afterMutation()
+
+  const applied = (target.strokes as readonly Paint[])[0]
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    stroke: applied && applied.type === 'SOLID' ? toHex(applied.color) : null,
+    weight: target.strokeWeight === figma.mixed ? 'mixed' : target.strokeWeight,
+  }
+}
+
+async function setText(params: Record<string, unknown>): Promise<unknown> {
+  const node = (await resolveFor(
+    params.nodeId,
+    (candidate) => candidate.type === 'TEXT',
+    'only a TEXT layer has characters to set',
+  )) as TextNode
+  const text = String(params.text ?? '')
+  await loadFontsOf(node)
+  node.characters = text
+  afterMutation()
+  return { id: node.id, name: node.name, characters: text.length }
+}
+
+const AUTO_LAYOUT_NUMBERS = [
+  'itemSpacing',
+  'paddingTop',
+  'paddingRight',
+  'paddingBottom',
+  'paddingLeft',
+] as const
+
+async function setAutoLayout(params: Record<string, unknown>): Promise<unknown> {
+  const node = (await resolveFor(
+    params.nodeId,
+    (candidate) => 'layoutMode' in candidate,
+    'only a frame, component or instance can be laid out',
+  )) as FrameNode
+  const mode = String(params.mode ?? '')
+  if (['HORIZONTAL', 'VERTICAL', 'NONE'].indexOf(mode) === -1) {
+    throw new Error(`mode must be HORIZONTAL, VERTICAL or NONE, not ${mode}`)
+  }
+  node.layoutMode = mode as FrameNode['layoutMode']
+
+  // Only what was named is changed: an agent adjusting spacing should not also
+  // silently reset the padding somebody set by hand.
+  if (mode !== 'NONE') {
+    for (const key of AUTO_LAYOUT_NUMBERS) {
+      if (params[key] !== undefined) node[key] = readNumber(params[key], key)
+    }
+    if (params.primaryAxisAlignItems !== undefined) {
+      node.primaryAxisAlignItems = params.primaryAxisAlignItems as FrameNode['primaryAxisAlignItems']
+    }
+    if (params.counterAxisAlignItems !== undefined) {
+      node.counterAxisAlignItems = params.counterAxisAlignItems as FrameNode['counterAxisAlignItems']
+    }
+  }
+  afterMutation()
+  return {
+    id: node.id,
+    name: node.name,
+    layoutMode: node.layoutMode,
+    itemSpacing: node.itemSpacing,
+    padding: [node.paddingTop, node.paddingRight, node.paddingBottom, node.paddingLeft],
+  }
+}
+
+async function createFrame(params: Record<string, unknown>): Promise<unknown> {
+  const parent =
+    params.parentId === undefined || params.parentId === ''
+      ? figma.currentPage
+      : await resolveFor(params.parentId, (candidate) => 'appendChild' in candidate, 'it cannot hold children')
+
+  const frame = figma.createFrame()
+  frame.name = typeof params.name === 'string' && params.name !== '' ? params.name : 'Frame'
+  frame.x = params.x === undefined ? 0 : readNumber(params.x, 'x')
+  frame.y = params.y === undefined ? 0 : readNumber(params.y, 'y')
+  frame.resize(
+    params.width === undefined ? 100 : Math.max(1, readNumber(params.width, 'width')),
+    params.height === undefined ? 100 : Math.max(1, readNumber(params.height, 'height')),
+  )
+  if (params.fill !== undefined) {
+    frame.fills = [{ type: 'SOLID', color: readColor(params.fill) }]
+  }
+  ;(parent as ChildrenMixin).appendChild(frame)
+  // A new layer changes the tree the panel is showing, not only the picture.
+  afterMutation(true)
+  return { ...toRow(frame), parentId: parent.id }
+}
+
+async function saveVersion(params: Record<string, unknown>): Promise<unknown> {
+  const title = String(params.title ?? '').trim()
+  if (title === '') throw new Error('Give the checkpoint a title')
+  const description = typeof params.description === 'string' ? params.description : undefined
+  const result = await figma.saveVersionHistoryAsync(title, description)
+  return { id: result?.id ?? null, title }
+}
+
 /** Commands the relay can issue. Errors are returned to the caller, not thrown away. */
 async function handleRequest(command: string, params: Record<string, unknown>): Promise<unknown> {
   switch (command) {
@@ -1803,6 +2106,18 @@ async function handleRequest(command: string, params: Record<string, unknown>): 
       })
       return { png }
     }
+    case 'set_fill':
+      return setFill(params)
+    case 'set_stroke':
+      return setStroke(params)
+    case 'set_text':
+      return setText(params)
+    case 'set_auto_layout':
+      return setAutoLayout(params)
+    case 'create_frame':
+      return createFrame(params)
+    case 'save_version':
+      return saveVersion(params)
     case 'extract': {
       const node = typeof params.url === 'string' && params.url !== ''
         ? await resolveUrl(parseUrl(params.url) ?? { url: params.url, fileKey: '', nodeId: null })
@@ -1821,6 +2136,7 @@ figma.ui.onmessage = (msg: FromUI) => {
     case 'ready':
       void restoreSize()
       void sendSettings()
+      void sendAgentSettings()
       sendTree()
       scheduleSelectionExtract()
       loadSaved()
@@ -1893,6 +2209,17 @@ figma.ui.onmessage = (msg: FromUI) => {
       break
     case 'save-settings':
       void saveSettings(msg.url, msg.token, msg.email ?? '')
+      break
+    case 'save-agent-settings':
+      void saveAgentSettings({
+        url: msg.url,
+        token: msg.token,
+        cwd: msg.cwd,
+        harness: msg.harness,
+        sessionId: msg.sessionId,
+        writes: msg.writes,
+        auto: msg.auto,
+      })
       break
     case 'sign-out':
       void signOut()

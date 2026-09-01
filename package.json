@@ -2,11 +2,15 @@
   "name": "figsnap",
   "version": "0.1.0",
   "private": true,
-  "description": "Figma plugin that extracts a selected node as a PNG, a React component, HTML and CSS, with a hosted relay so an agent can read the same designs over HTTP.",
+  "description": "Figma plugin that extracts a selected node as a PNG, a React component, HTML and CSS, with a hosted relay so an agent can read the same designs over HTTP and a local bridge so one can edit them from inside the plugin.",
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "figsnap-agent": "agent/index.mjs"
+  },
   "files": [
+    "agent",
     "shared",
     "worker",
     "manifest.json",
@@ -22,7 +26,14 @@
     "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",
     "test": "node test/run.mjs",
     "smoke": "node scripts/smoke-hosted.mjs",
-    "api": "node scripts/api.mjs"
+    "api": "node scripts/api.mjs",
+    "agent": "node agent/index.mjs",
+    "probe": "node probe/watch.mjs"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.136.0",

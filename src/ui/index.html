@@ -20,6 +20,7 @@
       <button id="refresh" class="button icon" type="button" title="Re-extract">&#8635;</button>
       <button id="mini-save" class="button primary mini-only" type="button" title="Save the selection" disabled>Save</button>
       <button id="minimise" class="button icon" type="button" title="Minimise — clears the canvas so you can select">&#8211;</button>
+      <button id="agent-toggle-page" class="button icon topbar-button" type="button">Agent</button>
       <button id="relay-toggle-page" class="button icon topbar-button" type="button">Relay</button>
     </header>
 
@@ -166,12 +167,160 @@
           <button class="seg" type="button" data-code="figmaCss">Figma CSS</button>
         </nav>
 
+        <div class="agent-column" id="agent-column" hidden>
+          <div class="agent-strip">
+            <span class="agent-title">Agent</span>
+            <span class="card-state" id="agent-session">No session</span>
+            <span class="spacer"></span>
+            <label class="check">
+              <input type="checkbox" id="agent-writes" />
+              <span>Allow edits</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="agent-auto" checked />
+              <span>Auto-approve</span>
+            </label>
+            <button class="button secondary" type="button" id="agent-setup-link">Setup</button>
+            <button class="button secondary" type="button" id="agent-stop" hidden>End</button>
+            <button class="button primary" type="button" id="agent-start" disabled>Start session</button>
+          </div>
+
+          <p class="placeholder pad" id="agent-idle">
+            Start a session to chat about this file.
+          </p>
+
+          <div class="agent-chat" id="agent-chat" hidden>
+            <div class="agent-log" id="agent-log"></div>
+
+            <div class="agent-permission" id="agent-permission" hidden>
+              <p class="agent-permission-title" id="agent-permission-title"></p>
+              <div class="agent-permission-options" id="agent-permission-options"></div>
+            </div>
+
+            <label class="agent-context" id="agent-context">
+              <input type="checkbox" id="agent-context-on" checked />
+              <span id="agent-context-label">Nothing selected</span>
+            </label>
+
+            <form class="agent-composer" id="agent-composer">
+              <textarea id="agent-input" class="text-input agent-input" rows="2" spellcheck="false"
+                placeholder="Ask about the selection, or ask for a change. Enter sends."></textarea>
+              <button class="button secondary" type="button" id="agent-cancel" hidden>Stop</button>
+              <button class="button primary" type="submit" id="agent-send">Send</button>
+            </form>
+            <p class="subtitle" id="agent-turn"></p>
+          </div>
+        </div>
+
         <div class="editor" id="editor">
           <div class="gutter" id="gutter" aria-hidden="true"></div>
           <div class="code-view" id="code-view"><p class="placeholder pad">Code appears here.</p></div>
         </div>
       </section>
     </main>
+
+    <div class="full-page" id="agent-page" hidden>
+      <article class="doc agent">
+        <h1>Agent</h1>
+        <p class="doc-lead">
+          A coding agent that can read this file and change it, running on your
+          own machine under your own login. Start it with
+          <code>npm run agent</code> in the plugin's own project directory; it
+          prints a token and lists the harnesses it found.
+        </p>
+
+        <div class="card" id="agent-setup">
+          <div class="card-row">
+            <label class="settings-label" for="agent-url">Daemon</label>
+            <input class="text-input" type="text" id="agent-url" spellcheck="false"
+              autocomplete="off" placeholder="ws://localhost:3056/panel" />
+            <span class="dot off" id="agent-dot"></span>
+            <span class="card-state" id="agent-conn">off</span>
+          </div>
+          <div class="card-row">
+            <label class="settings-label" for="agent-token">Token</label>
+            <input class="text-input" type="password" id="agent-token" spellcheck="false"
+              autocomplete="off" placeholder="printed by the daemon" />
+            <button class="button secondary" type="button" id="agent-connect">Connect</button>
+          </div>
+          <div class="card-row">
+            <span class="settings-label">Harness</span>
+            <div class="chips" id="agent-harnesses">
+              <span class="subtitle">Connect to see what this machine can launch.</span>
+            </div>
+          </div>
+          <div class="card-row">
+            <label class="settings-label" for="agent-cwd">Directory</label>
+            <input class="text-input" type="text" id="agent-cwd" spellcheck="false"
+              autocomplete="off" placeholder="the project the agent works in" />
+            <button class="button icon" type="button" id="agent-cwd-up" title="Up one level">&#8593;</button>
+          </div>
+          <div class="card-row">
+            <span class="settings-label"></span>
+            <div class="chips" id="agent-dirs"></div>
+          </div>
+          <p class="subtitle" id="agent-setup-note" style="margin: 0"></p>
+        </div>
+
+        <p>
+          <strong>The chat itself is the Agent tab in the code column</strong>,
+          beside React and HTML. It replaces the code there rather than covering
+          the panel, so the layer tree and the preview stay where they are while
+          you talk about them. Starting and ending a session, and the edit
+          switch, are on that tab; this page is the pairing and the reference.
+        </p>
+
+        <h2>What the agent can reach</h2>
+        <p>
+          Reading is always on: the selection, the layer tree, and the full
+          extraction — the same HTML measured against what Figma draws, the same
+          byte-exact <code>figmaCss</code>, images inlined and icons as real SVG.
+          Nothing is truncated on the way, which is the difference between this
+          and asking over a capped API.
+        </p>
+        <p>
+          Two switches sit on the Agent column, and they do different jobs.
+          <strong>Allow edits</strong> decides whether the canvas can be touched
+          at all; it starts off, and a harness told to skip its own permission
+          prompts still cannot get past it. <strong>Auto-approve</strong> starts
+          on and only decides who answers the harness when it asks — you, or the
+          daemon on your behalf. Every automatic yes is written into the
+          transcript, so nothing happens off the record.
+        </p>
+        <p>
+          Each edit is committed as one undo step, so one <strong>Cmd-Z</strong>
+          takes back one change. Ask for a checkpoint before a long run and you
+          get a named version to return to. Both switches are remembered per
+          user, so a session you set up once starts the same way next time.
+        </p>
+        <div class="api" id="agent-tools"></div>
+
+        <h2>Where the agent runs</h2>
+        <p>
+          On your machine, as a subprocess of the daemon, using the login and
+          billing you already have. This plugin never sees a model key. The
+          directory above bounds the file reads and writes the daemon performs
+          on the agent's behalf — but the agent also gets a terminal, and it
+          runs as you. Treat starting a session as running that harness in that
+          directory yourself, because that is what it is.
+        </p>
+        <p>
+          The socket is guarded twice, because any page you visit can open a
+          connection to a port on your own machine: the daemon checks the
+          <code>Origin</code> of the handshake, which a browser cannot forge, and
+          requires the token above, which a browser <code>WebSocket</code> cannot
+          send in a header and so travels in the address.
+        </p>
+        <p>
+          A plugin exists only while you have it open — there is no background
+          or scheduled mode, and closing it ends the session on this side. The
+          session id is stored, so reopening asks the harness to replay the
+          conversation rather than starting a new one. Figma can also take the
+          plugin's runtime away on its own, mid-answer, which is the same case
+          and has the same answer.
+        </p>
+      </article>
+    </div>
 
     <div class="full-page" id="relay-page" hidden>
       <article class="doc">

@@ -23,6 +23,20 @@ The relay is a Cloudflare Worker the designer signs into from the plugin. Every
 route that touches a design needs their token; \`/health\`, \`/docs.md\` and
 \`/skill\` do not.
 
+## First: are you inside the plugin?
+
+If you have tools named \`figma_get_selection\`, \`figma_extract\`, \`figma_set_fill\`
+and so on, then you are the agent the designer started from inside Figsnap's own
+Agent tab, and **none of the curl below applies to you**. Use those tools: they
+reach the same designs through the same plugin, without HTTP, without a token
+and without a response cap, and they are the only route that can change the file.
+The \`formats\` argument on \`figma_extract\` takes the same names as \`format\`
+below, and the rest of this file — which output to ask for, what each one is
+good for, and what will bite you — reads the same either way.
+
+Everything from here on is written for the other case: an agent working in a
+project, reading the designer's open file across the relay.
+
 ## Always start here
 
 \`\`\`bash

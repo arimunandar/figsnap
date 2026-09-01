@@ -1,0 +1,13 @@
+{
+  "name": "Figsnap runtime probe",
+  "id": "figsnap-runtime-probe",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["ws://localhost:3057"],
+    "devAllowedDomains": ["ws://localhost:3057"],
+    "reasoning": "Throwaway measurement plugin. Holds one WebSocket to a local process on port 3057 that records when Figma tears the plugin runtime down."
+  }
+}

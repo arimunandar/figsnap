@@ -4,56 +4,18 @@
 // which covers it goes away, that the main thread is told to shrink the window,
 // and that the plugin keeps working while it is out of the way.
 
-import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { JSDOM } from 'jsdom'
+import { openPanel } from './support/panel.mjs'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const out = []
 const check = (name, ok, detail = '') => {
   out.push(ok)
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`)
 }
 
-const html = await readFile(join(root, 'dist/ui.html'), 'utf8')
-const dom = new JSDOM(html, {
-  url: 'https://www.figma.com/',
-  runScripts: 'dangerously',
-  beforeParse(window) {
-    window.fetch = async () => { throw new Error('offline') }
-    window.WebSocket = class { constructor() { this.readyState = 0 } addEventListener() {} close() {} send() {} }
-    // jsdom implements no object URLs; a browser does, and the panel needs them
-    // to show image bytes without a round trip.
-    let issued = 0
-    window.URL.createObjectURL = () => `blob:figsnap/${++issued}`
-    window.URL.revokeObjectURL = () => {}
-  },
-})
-const { window } = dom
-const id = (name) => window.document.getElementById(name)
-const send = (message) => window.postMessage({ pluginMessage: message }, '*')
-const settle = () => new Promise((resolve) => setTimeout(resolve, 60))
+// Nothing here talks to a relay, so the panel opens offline with a stored
+// session: the gate never appears and the socket never opens.
+const { window, id, send, settle, posted, workspace } = await openPanel()
 
-const posted = []
-window.addEventListener('message', (event) => {
-  const message = event.data?.pluginMessage
-  if (!message || typeof message.type !== 'string') return
-  if (message.type === 'ready') {
-    // A local relay needs no account, so the gate never appears.
-    // A stored session, so the panel opens on the workspace rather than the
-    // gate. The relay itself is unreachable here; nothing in this suite needs it.
-    send({ type: 'settings', url: 'wss://relay.test/plugin', token: 'a stored token',
-           email: 'you@example.test', profiles: [] })
-    return
-  }
-  posted.push(message)
-})
-
-await settle()
-await settle()
-
-const workspace = () => window.document.querySelector('.body')
 check('the panel starts open', workspace().hidden === false && !window.document.body.classList.contains('mini'))
 check('and offers a minimise button', id('minimise') !== null && id('minimise').textContent === '–')
 

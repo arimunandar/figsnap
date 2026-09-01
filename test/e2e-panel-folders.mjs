@@ -5,58 +5,17 @@
 // real built panel — the store itself is covered by e2e-folders.mjs, which runs
 // the real main thread.
 
-import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { JSDOM } from 'jsdom'
+import { openPanel } from './support/panel.mjs'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const out = []
 const check = (name, ok, detail = '') => {
   out.push(ok)
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`)
 }
 
-const html = await readFile(join(root, 'dist/ui.html'), 'utf8')
-
-const dom = new JSDOM(html, {
-  url: 'https://www.figma.com/',
-  runScripts: 'dangerously',
-  beforeParse(window) {
-    // Nothing here talks to a relay; a socket that never opens is fine.
-    window.fetch = async () => { throw new Error('offline') }
-    window.URL.createObjectURL = () => 'blob:figsnap/1'
-    window.URL.revokeObjectURL = () => {}
-    window.WebSocket = class {
-      constructor() { this.readyState = 0 }
-      addEventListener() {}
-      close() {}
-      send() {}
-    }
-  },
-})
-const { window } = dom
-const id = (name) => window.document.getElementById(name)
-const send = (message) => window.postMessage({ pluginMessage: message }, '*')
-
-const posted = []
-window.addEventListener('message', (event) => {
-  const message = event.data?.pluginMessage
-  if (!message || typeof message.type !== 'string') return
-  if (message.type === 'ready') {
-    // A local relay has no accounts, so the gate never appears.
-    // A stored session, so the panel opens on the workspace rather than the
-    // gate. The relay itself is unreachable here; nothing in this suite needs it.
-    send({ type: 'settings', url: 'wss://relay.test/plugin', token: 'a stored token',
-           email: 'you@example.test', profiles: [] })
-    return
-  }
-  posted.push(message)
-})
-
-const settle = () => new Promise((resolve) => setTimeout(resolve, 60))
-await settle()
-await settle()
+// Nothing here talks to a relay, so the panel opens offline with a stored
+// session: the gate never appears and the socket never opens.
+const { window, id, send, settle, posted } = await openPanel()
 
 const entry = (nodeId, name, folder) => ({ id: nodeId, name, type: 'FRAME', addedAt: 1, folder })
 

@@ -11,13 +11,17 @@
   "networkAccess": {
     "allowedDomains": [
       "wss://figsnap-relay.arimunandar-dev.workers.dev",
-      "https://figsnap-relay.arimunandar-dev.workers.dev"
+      "https://figsnap-relay.arimunandar-dev.workers.dev",
+      "ws://localhost:3056",
+      "http://localhost:3056"
     ],
     "devAllowedDomains": [
       "wss://figsnap-relay.arimunandar-dev.workers.dev",
-      "https://figsnap-relay.arimunandar-dev.workers.dev"
+      "https://figsnap-relay.arimunandar-dev.workers.dev",
+      "ws://localhost:3056",
+      "http://localhost:3056"
     ],
-    "reasoning": "Talks to the Figsnap relay, a Cloudflare Worker the user signs in to."
+    "reasoning": "Talks to the Figsnap relay, a Cloudflare Worker the user signs in to, and to figsnap-agent on port 3056 — a daemon the user starts on their own machine, which runs a coding agent under the user's own login. Both addresses are named exactly; no wildcards, and nothing else on localhost is reachable."
   },
   "enablePrivatePluginApi": true
 }

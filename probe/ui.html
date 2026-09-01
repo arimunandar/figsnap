@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  body { margin: 0; padding: 10px 12px; font: 11px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  h1 { margin: 0 0 6px; font-size: 13px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+  dt { color: #666; }
+  dd { margin: 0; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+  p { margin: 8px 0 0; color: #666; }
+  .bad { color: #c02b2b; }
+</style>
+</head>
+<body>
+<h1>Figsnap runtime probe</h1>
+<dl>
+  <dt>Socket</dt><dd id="socket">connecting…</dd>
+  <dt>UI boot</dt><dd id="boot"></dd>
+  <dt>UI alive</dt><dd id="uptime">0s</dd>
+  <dt>Main boot</dt><dd id="mainboot">waiting…</dd>
+  <dt>Main alive</dt><dd id="mainuptime">—</dd>
+  <dt>Reconnects</dt><dd id="reconnects">0</dd>
+  <dt>Longest stall</dt><dd id="stall">0ms</dd>
+</dl>
+<p>Leave this open for an hour. Every event is timestamped in the terminal
+running <code>node probe/watch.mjs</code> and appended to <code>probe/probe.log</code>.</p>
+
+<script>
+// Beating every 2s makes a stall visible at a resolution finer than the 1-3
+// minute teardown the report claims, without flooding the log: only the gap
+// between beats is recorded, not each beat.
+var TICK_MS = 2000
+var URL = 'ws://localhost:3057'
+
+var UI_BOOT = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+var startedAt = Date.now()
+var reconnects = 0
+var longestStall = 0
+var lastTickAt = Date.now()
+var mainBoot = null
+var mainUptimeMs = 0
+var socket = null
+var retryMs = 500
+
+document.getElementById('boot').textContent = UI_BOOT
+
+function show(id, text, bad) {
+  var el = document.getElementById(id)
+  el.textContent = text
+  el.className = bad ? 'bad' : ''
+}
+
+function send(payload) {
+  if (socket && socket.readyState === 1) socket.send(JSON.stringify(payload))
+}
+
+function open() {
+  show('socket', 'connecting…')
+  var next
+  try {
+    next = new WebSocket(URL)
+  } catch (error) {
+    setTimeout(open, retryMs)
+    return
+  }
+  socket = next
+
+  next.onopen = function () {
+    retryMs = 500
+    show('socket', 'open')
+    send({
+      type: 'hello',
+      uiBoot: UI_BOOT,
+      uiUptimeMs: Date.now() - startedAt,
+      reconnects: reconnects,
+      mainBoot: mainBoot,
+      at: Date.now(),
+    })
+  }
+
+  next.onclose = function (event) {
+    // A close is the loud signal. Whether the runtime died or only the socket
+    // did is what the reconnect distinguishes: a runtime that died comes back
+    // with a new UI boot id, because this whole document was reloaded.
+    show('socket', 'closed (' + event.code + ') — retrying', true)
+    reconnects += 1
+    show('reconnects', String(reconnects))
+    socket = null
+    setTimeout(open, retryMs)
+    retryMs = Math.min(retryMs * 2, 5000)
+  }
+
+  next.onerror = function () {}
+}
+
+open()
+
+setInterval(function () {
+  var now = Date.now()
+  var gap = now - lastTickAt
+  lastTickAt = now
+  // A timer that should have fired 2s ago and fired much later means the
+  // runtime was frozen rather than destroyed — a different failure, and one a
+  // socket close would never reveal.
+  if (gap > longestStall) {
+    longestStall = gap
+    show('stall', gap + 'ms', gap > TICK_MS * 3)
+  }
+  show('uptime', Math.round((now - startedAt) / 1000) + 's')
+  send({
+    type: 'tick',
+    uiBoot: UI_BOOT,
+    uiUptimeMs: now - startedAt,
+    gapMs: gap,
+    mainBoot: mainBoot,
+    mainUptimeMs: mainUptimeMs,
+    at: now,
+  })
+}, TICK_MS)
+
+window.onmessage = function (event) {
+  var message = event.data && event.data.pluginMessage
+  if (!message || message.type !== 'main-beat') return
+  if (mainBoot !== null && mainBoot !== message.mainBoot) {
+    send({ type: 'main-restart', from: mainBoot, to: message.mainBoot, at: Date.now() })
+  }
+  mainBoot = message.mainBoot
+  mainUptimeMs = message.mainUptimeMs
+  show('mainboot', mainBoot)
+  show('mainuptime', Math.round(mainUptimeMs / 1000) + 's')
+}
+</script>
+</body>
+</html>

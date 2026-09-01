@@ -7,6 +7,9 @@ same designs over HTTP while you work.
 - **In Figma**: pick a layer, get code. No account needed for that part.
 - **Over HTTP**: `POST /extract` with a node id or a Figma link, from an agent,
   a script or CI.
+- **Inside the plugin**: an [agent you chat with in the panel](#an-agent-inside-the-plugin),
+  running on your own machine under your own login, that can read the open file
+  and — when you let it — change it.
 
 TypeScript, bundled with esbuild. The relay is a Cloudflare Worker.
 
@@ -140,8 +143,11 @@ manifest.json      Plugin manifest Figma reads
 build.mjs          esbuild build; inlines the UI into a single HTML file
 src/code.ts        Main thread: tree, export, CSS/TSX generation
 src/ui/main.ts     UI thread: tree rendering, tabs, clipboard, download
-src/ui/bridge.ts   UI thread: WebSocket link to the relay
-server/relay.mjs   Local relay: WebSocket to the plugin, REST + SSE to agents
+src/ui/bridge.ts   UI thread: WebSocket link to the relay and to the daemon
+agent/index.mjs    The local bridge daemon: WS server, ACP client, MCP server
+agent/lib/tools.mjs   The figma_* tools an agent is handed
+agent/mcp-stdio.mjs   The MCP server a harness spawns; proxies into the plugin
+probe/             Throwaway: measures how long Figma leaves a plugin running
 src/ui/index.html  UI template; build.mjs fills in <!-- STYLE --> and <!-- SCRIPT -->
 src/ui/style.css   Styles, using Figma's theme variables
 src/globals.d.ts   Pulls in @figma/plugin-typings
@@ -292,6 +298,138 @@ does not list.** A relay of your own means adding its exact host to
 `networkAccess.devAllowedDomains` in `manifest.json` and re-importing the plugin,
 since Figma caches the manifest.
 
+## An agent inside the plugin
+
+The relay sends designs *out*. This sends a conversation *in*: a chat in the
+plugin's **Agent** tab, backed by a coding harness already installed and signed
+in on your own machine, which can read the open file and — once you allow it —
+change it.
+
+```
+  Figma desktop                       Your machine
+ ┌────────────────────┐        ┌──────────────────────────────────┐
+ │  main thread       │        │   figsnap-agent  (npm run agent) │
+ │  figma.* , no net  │        │    · ACP client, over stdio      │
+ │        ▲           │        │    · owns fs/* and terminal/*    │──┐ stdio
+ │        │ postMessage        │    · MCP server: figma_* tools   │  ▼
+ │        ▼           │  ws:// │    · WebSocket server            │ ┌──────────┐
+ │  UI iframe: chat   │◄──────►│                                  │ │ Claude   │
+ └────────────────────┘  :3056 └──────────────────────────────────┘ │ Codex    │
+                                                                    │ Gemini   │
+                                                                    └──────────┘
+```
+
+**Why a daemon at all.** The only transport the Agent Client Protocol blesses is
+stdio, and the client is the side that *launches* the agent as a subprocess. A
+browser can do neither. An ACP client also has to answer `fs/read_text_file` and
+`terminal/create` on the agent's behalf, and a plugin iframe has no filesystem
+and no shell. So the daemon is the client, and the panel is that client's face.
+
+**Why MCP as well as ACP.** ACP alone would give you a chat about your project.
+The `figma_*` tools are how the agent gets hands in the file: each one proxies
+over the same WebSocket into `figma.*`, which is the request/response path the
+relay has always used. All three harnesses speak both protocols.
+
+### Using it
+
+**1. Start the daemon**, in this project:
+
+```bash
+npm run agent          # or, once published: npx figsnap-agent
+```
+
+It prints a token, its port, and the harnesses it found. It looks for `claude`,
+`codex` and `gemini` on your `PATH`; each brings its own login and billing, and
+this plugin never sees a model key. To use something else, name it yourself:
+
+```bash
+FIGSNAP_AGENT_COMMAND='npx -y @agentclientprotocol/some-adapter' npm run agent
+```
+
+**2. Press Agent** in the plugin's top bar. The chat takes over the third
+column — the one that normally shows the generated code — so the layer tree and
+the preview stay beside it. Press **Setup** in the strip to pair: paste the
+token, **Connect**, then pick a harness and the project directory the agent
+should work in. The token is stored per user like the relay's, so pairing is a
+one-time job; after that the strip's **Start session** is the whole ritual.
+
+**3. Ask for something.**
+
+> what does the selected frame actually say?
+
+> make the CTA match our Button component in src/components
+
+Whatever is selected on the canvas travels with each message by default — names,
+types, sizes and node ids, not the design itself, which is a tool call away. The
+checkbox above the composer turns that off for one message or for good.
+
+Reading is always on. Two switches on the strip govern the rest, and they are
+not the same switch:
+
+- **Allow edits** decides whether the canvas can be touched at all. Off by
+  default. It is enforced by the daemon rather than the agent, so a harness run
+  without permission prompts still cannot get past it.
+- **Auto-approve** decides who answers the harness when it *does* ask. On by
+  default, because being asked twice for one change helps nobody. Every
+  automatic yes is written into the transcript.
+
+Both are remembered per user. Each approved edit is committed with
+`figma.commitUndo()`, so **one Cmd-Z takes back one change**. Ask for a
+checkpoint before a long run and you get a named entry in version history.
+
+### The tools
+
+| Tool | |
+| --- | --- |
+| `figma_get_selection` | what is selected right now |
+| `figma_get_tree`, `figma_get_children` | walk the page, a branch at a time |
+| `figma_extract` | the full extraction: HTML, `figmaCss`, TSX, CSS modules |
+| `figma_export_png` | the picture itself, as an image the model can look at |
+| `figma_resolve_url`, `figma_list_saved` | Figma links, and the curated set |
+| `figma_set_fill` | replace a node's fills with one solid colour |
+| `figma_set_stroke` | set or clear a stroke — borders are strokes, not fills |
+| `figma_set_text` | retype a TEXT layer, fonts loaded first |
+| `figma_set_auto_layout` | direction, spacing, padding, alignment |
+| `figma_create_frame` | a new frame, on the page or inside a parent |
+| `figma_save_version` | a named checkpoint in version history |
+
+Nothing is truncated on the way through. Figma's own MCP server caps a response
+at 20 kB; `figma_extract` returns whatever the node is, which for a real screen
+is well past that, with images inlined and icons as real SVG.
+
+### Keeping it to your machine
+
+A port on localhost is reachable by any page you happen to have open, so the
+socket is guarded twice:
+
+- the `Origin` of the handshake must be `null` (a sandboxed plugin iframe) or
+  `figma.com`. A web page cannot forge that header, and CORS does not apply to a
+  WebSocket upgrade, so this check is done by hand on the connection.
+- a token must be in the query string, because a browser `WebSocket` cannot set
+  headers. The daemon prints one and remembers it in `~/.figsnap/agent-token`;
+  `npm run agent -- --new-token` rotates it.
+
+The directory you chose bounds the daemon's own file routes: a path that climbs
+out of it is refused rather than resolved. Be clear about what that is and is
+not, though — the agent also gets a terminal, and a shell command is arbitrary.
+It runs as you, with your permissions, exactly as it would if you had typed
+`claude` in that directory yourself. The boundary is the account, not the folder.
+
+### How long a plugin lives
+
+A plugin exists only while it is open, and Figma may tear the runtime down on its
+own. The session id is stored in `clientStorage`, so reopening the panel asks the
+harness to `session/load` and replay the conversation instead of starting a new
+one. `probe/` is a throwaway plugin that measures how aggressive this actually is
+on your machine:
+
+```bash
+npm run probe          # then import probe/manifest.json in Figma, leave it an hour
+```
+
+It logs every disconnect, every new runtime and every frozen timer with a
+timestamp, and prints a verdict on the way out.
+
 ## Develop
 
 ```bash
@@ -329,6 +467,9 @@ run `npm run build` first, since it reads the built file:
 | `e2e-panel-minimise.mjs` | minimising: what hides, what the main thread is told, what keeps working |
 | `e2e-skill.mjs` | the Claude Code skill files as the relay serves them |
 | `e2e-tree.mjs` | `?depth=` walks and the `format` picker, on the real main thread |
+| `e2e-agent-bridge.mjs` | the daemon against a scripted ACP harness: streaming, permissions, MCP, resume |
+| `e2e-panel-agent.mjs` | the Agent column in the built panel, against a fake daemon |
+| `e2e-writes.mjs` | the mutating commands on the real main thread: undo, re-render, refusals |
 
 `npm test` never touches the network. To check a relay you have actually deployed:
 
@@ -371,10 +512,16 @@ saves every designer from cloning, building and importing a manifest.
 - **Remove `enablePrivatePluginApi`** from `manifest.json`. It is what makes
   `figma.fileKey` readable, which is how a link to the wrong file is detected. It
   is only permitted for private and development plugins.
-- **`networkAccess`**: `allowedDomains` is `["none"]`, so a published build cannot
-  reach anything. `devAllowedDomains` covers the local relay while running from
-  Plugins > Development. A published plugin that should talk to a relay needs that
-  address in `allowedDomains` instead.
+- **`networkAccess`**: `allowedDomains` is what a *published* build may reach and
+  `devAllowedDomains` what it may reach from Plugins > Development. Both currently
+  name the relay and `ws://localhost:3056` / `http://localhost:3056` for the agent
+  daemon, exact hosts rather than wildcards, and both need updating if you deploy
+  your own relay — Figma caches the manifest, so re-import afterwards. Naming a
+  local server makes the `reasoning` string mandatory; the one committed here
+  explains both addresses. Figma publishes no policy on `ws://localhost`, but it
+  is a documented pattern and at least one Community plugin ships it, so it has
+  passed review before. Drop both localhost entries if you would rather not
+  find out.
 
 `id` is assigned by Figma on first publish; the placeholder is correct until then.
 
@@ -397,6 +544,13 @@ The main thread and the UI run in separate sandboxes and exchange messages:
 - Invisible layers are skipped everywhere.
 - Image clipboard writes are blocked in some Figma builds, so **Download PNG** is
   the reliable path. Text copy falls back to `execCommand('copy')`.
+- A plugin exists only while somebody has it open. There is no headless or
+  scheduled mode and no keep-alive API, so the in-panel agent cannot work in the
+  background, and Figma may take the runtime away mid-answer. The stored session
+  id is the answer to that: reopening resumes rather than restarts.
+- A plugin sees one open file. Nothing here can create a file or read a second one.
+- Writing to the canvas is refused in Dev Mode, which is why the manifest is
+  `editorType: ["figma"]`.
 
 ## Sending nodes to an AI agent
 

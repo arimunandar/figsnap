@@ -6,14 +6,10 @@
 // state machine, the socket and the HTTP calls are the shipped ones, so this
 // fails if the gate stops opening, stops connecting, or stops resuming.
 
-import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { JSDOM } from 'jsdom'
 import { allEndpoints } from '../shared/endpoints.mjs'
 import { requireRelay } from './support/relay.mjs'
+import { openPanel as open, until } from './support/panel.mjs'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = requireRelay('the panel flow')
 const SOCKET = `${BASE.replace(/^http/, 'ws')}/plugin`
 // Nothing listens here: a relay address that is wrong or a machine that is offline.
@@ -25,7 +21,6 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`)
 }
 
-const html = await readFile(join(root, 'dist/ui.html'), 'utf8')
 const unique = Date.now()
 
 // A real extraction is thousands of characters of generated code, which is what
@@ -46,83 +41,63 @@ function answer(command) {
   return { ok: true }
 }
 
-// Awaits the condition: an async one returns a promise, which is always truthy,
-// so a non-awaiting poll would report success on its first tick.
-async function until(condition, timeoutMs = 15_000, label = 'condition') {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    let ok = false
-    try { ok = await condition() } catch { ok = false }
-    if (ok) return true
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
-  throw new Error(`timed out waiting for ${label}`)
-}
-
 /**
- * Opens the panel with a given set of stored settings and answers it the way the
- * main thread would. The stand-in is deliberately thin: storage, the three
+ * Opens the panel with a given set of stored settings and answers it the way
+ * the main thread would. The stand-in is deliberately thin: storage, the three
  * settings messages, and enough commands for one real request to come back
  * through the relay.
  */
-function openPanel(stored) {
+async function openPanel(stored) {
   const settings = { url: '', token: '', email: '', profiles: [], ...stored }
   const seen = []
   const applied = []
 
-  const dom = new JSDOM(html, {
-    url: 'https://www.figma.com/',
-    runScripts: 'dangerously',
-    // A plugin iframe has both; jsdom has neither, and Node's are the real ones.
-    beforeParse(window) {
-      window.fetch = (input, init) => fetch(input, init)
-      window.WebSocket = WebSocket
+  const panel = await open({
+    settings,
+    // Node's real fetch and WebSocket, against the relay under test: nothing
+    // about the flow is reimplemented here.
+    online: true,
+    onMessage(message, api) {
+      switch (message.type) {
+        case 'save-settings':
+          settings.url = message.url
+          settings.token = message.token
+          settings.email = message.email ?? ''
+          api.send({ type: 'settings', ...settings })
+          break
+        case 'sign-out':
+          settings.token = ''
+          settings.email = ''
+          api.send({ type: 'settings', ...settings })
+          break
+        case 'sync-apply':
+          applied.push(message)
+          break
+        case 'req':
+          seen.push(message.command)
+          api.send({ type: 'res', id: message.id, ok: true, data: answer(message.command) })
+          break
+        default:
+          break
+      }
     },
   })
-  const { window } = dom
 
-  const send = (message) => window.postMessage({ pluginMessage: message }, '*')
-
-  window.addEventListener('message', (event) => {
-    const message = event.data?.pluginMessage
-    if (!message || typeof message.type !== 'string') return
-    switch (message.type) {
-      case 'ready':
-        send({ type: 'settings', ...settings })
-        break
-      case 'save-settings':
-        settings.url = message.url
-        settings.token = message.token
-        settings.email = message.email ?? ''
-        send({ type: 'settings', ...settings })
-        break
-      case 'sign-out':
-        settings.token = ''
-        settings.email = ''
-        send({ type: 'settings', ...settings })
-        break
-      case 'sync-apply':
-        applied.push(message)
-        break
-      case 'req': {
-        seen.push(message.command)
-        send({ type: 'res', id: message.id, ok: true, data: answer(message.command) })
-        break
-      }
-      default:
-        break
-    }
-  })
-
-  const id = (name) => window.document.getElementById(name)
-  const workspace = () => window.document.querySelector('.body')
-  const submit = () => id('auth-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
-  return { dom, window, settings, seen, applied, id, workspace, submit, send }
+  return {
+    ...panel,
+    settings,
+    seen,
+    applied,
+    submit: () =>
+      panel
+        .id('auth-form')
+        .dispatchEvent(new panel.window.Event('submit', { bubbles: true, cancelable: true })),
+  }
 }
 
 // ------------------------------------------------------ opening with no session
 
-const gate = openPanel({ url: SOCKET })
+const gate = await openPanel({ url: SOCKET })
 check('the panel opens on the gate, not the workspace',
   gate.id('auth-page').hidden === false && gate.workspace().hidden === true)
 check('the top bar is out of the way while the gate is shut', gate.id('topbar').hidden === true)
@@ -183,7 +158,7 @@ gate.window.close()
 
 // ------------------------------------------------------- resuming that session
 
-const resumed = openPanel({ url: SOCKET, token, email: account.email })
+const resumed = await openPanel({ url: SOCKET, token, email: account.email })
 await until(() => resumed.workspace().hidden === false, 10_000, 'the workspace')
 check('a stored session skips the gate', resumed.id('auth-page').hidden === true)
 await until(() => resumed.id('relay-dot').className === 'dot open', 20_000, 'the socket')
@@ -324,7 +299,7 @@ resumed.window.close()
 
 // --------------------------------------------------------- an expired session
 
-const expired = openPanel({ url: SOCKET, token: 'a token that no longer resolves', email: 'stale@example.com' })
+const expired = await openPanel({ url: SOCKET, token: 'a token that no longer resolves', email: 'stale@example.com' })
 await until(() => expired.id('auth-page').hidden === false && expired.id('auth-form').hidden === false, 20_000, 'the gate')
 check('an expired session is sent back to the form',
   expired.id('auth-message').textContent.includes('expired'), expired.id('auth-message').textContent)
@@ -334,7 +309,7 @@ expired.window.close()
 
 // An unreachable relay is still a relay with accounts, so the gate is still the
 // only sensible view — there is nothing behind it to show.
-const unreachable = openPanel({ url: NOTHING })
+const unreachable = await openPanel({ url: NOTHING })
 await until(() => unreachable.id('auth-form').hidden === false, 20_000, 'the form')
 check('an unreachable relay still asks for an account',
   unreachable.id('auth-page').hidden === false && unreachable.workspace().hidden === true)

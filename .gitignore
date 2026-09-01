@@ -6,3 +6,4 @@ dist/
 .relay-token
 .signup-code
 .figsnap-token
+probe/probe.log

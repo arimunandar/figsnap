@@ -3,7 +3,7 @@ import './style.css'
 import { createBridge, type BridgeStatus } from './bridge'
 import { highlightLines } from './highlight'
 import { groups as apiGroups, curlFor, requestHeaders, type Endpoint } from '../../shared/endpoints.mjs'
-import { DEFAULT_RELAY_URL, HOSTED_RELAY_URL } from '../relays'
+import { AGENT_URL, DEFAULT_RELAY_URL, HOSTED_RELAY_URL } from '../relays'
 
 let relayUrl = DEFAULT_RELAY_URL
 let relayToken = ''
@@ -77,6 +77,7 @@ type Selected = { type: 'selected'; id: string | null; ids: string[]; rows: Tree
 type FromPlugin =
   | Extraction
   | { type: 'settings'; url: string; token: string; email?: string; profiles?: { url: string; token: string; email?: string }[] }
+  | { type: 'agent-settings'; url: string; token: string; cwd: string; harness: string; sessionId: string }
   | PluginResponse
   | Selected
   | BatchProgress
@@ -186,6 +187,41 @@ const pageAccountNote = document.getElementById('page-account-note') as HTMLPara
 const pageSignIn = document.getElementById('page-signin') as HTMLButtonElement
 const pageSignOut = document.getElementById('page-signout') as HTMLButtonElement
 const pageTokenHint = document.getElementById('page-token-hint') as HTMLSpanElement
+const editor = document.getElementById('editor') as HTMLDivElement
+const agentColumn = document.getElementById('agent-column') as HTMLDivElement
+const agentSessionLabel = document.getElementById('agent-session') as HTMLSpanElement
+const agentIdle = document.getElementById('agent-idle') as HTMLParagraphElement
+const agentSetupLink = document.getElementById('agent-setup-link') as HTMLButtonElement
+const agentPage = document.getElementById('agent-page') as HTMLDivElement
+const agentPageToggle = document.getElementById('agent-toggle-page') as HTMLButtonElement
+const agentUrlInput = document.getElementById('agent-url') as HTMLInputElement
+const agentTokenInput = document.getElementById('agent-token') as HTMLInputElement
+const agentConnectButton = document.getElementById('agent-connect') as HTMLButtonElement
+const agentDot = document.getElementById('agent-dot') as HTMLSpanElement
+const agentConn = document.getElementById('agent-conn') as HTMLSpanElement
+const agentHarnessChips = document.getElementById('agent-harnesses') as HTMLDivElement
+const agentCwdInput = document.getElementById('agent-cwd') as HTMLInputElement
+const agentCwdUp = document.getElementById('agent-cwd-up') as HTMLButtonElement
+const agentDirChips = document.getElementById('agent-dirs') as HTMLDivElement
+const agentWritesToggle = document.getElementById('agent-writes') as HTMLInputElement
+const agentAutoToggle = document.getElementById('agent-auto') as HTMLInputElement
+const agentStartButton = document.getElementById('agent-start') as HTMLButtonElement
+const agentStopButton = document.getElementById('agent-stop') as HTMLButtonElement
+const agentSetupNote = document.getElementById('agent-setup-note') as HTMLParagraphElement
+const agentChat = document.getElementById('agent-chat') as HTMLDivElement
+const agentLog = document.getElementById('agent-log') as HTMLDivElement
+const agentPermissionBox = document.getElementById('agent-permission') as HTMLDivElement
+const agentPermissionTitle = document.getElementById('agent-permission-title') as HTMLParagraphElement
+const agentPermissionOptions = document.getElementById('agent-permission-options') as HTMLDivElement
+const agentComposer = document.getElementById('agent-composer') as HTMLFormElement
+const agentInput = document.getElementById('agent-input') as HTMLTextAreaElement
+const agentSendButton = document.getElementById('agent-send') as HTMLButtonElement
+const agentCancelButton = document.getElementById('agent-cancel') as HTMLButtonElement
+const agentContextRow = document.getElementById('agent-context') as HTMLLabelElement
+const agentContextOn = document.getElementById('agent-context-on') as HTMLInputElement
+const agentContextLabel = document.getElementById('agent-context-label') as HTMLSpanElement
+const agentTurnLine = document.getElementById('agent-turn') as HTMLParagraphElement
+const agentToolList = document.getElementById('agent-tools') as HTMLDivElement
 const apiList = document.getElementById('api-list') as HTMLDivElement
 const apiNode = document.getElementById('api-node') as HTMLInputElement
 const pageHealthCommand = document.getElementById('page-cmd-health') as HTMLPreElement
@@ -212,6 +248,9 @@ let code: Record<CodeTab, string> = { tsx: '', html: '', moduleCss: '', css: '',
 let currentBlob: Blob | null = null
 let currentUrl: string | null = null
 let currentName = 'selection'
+// The page a selection sits on is worth a word to the agent, and the tree
+// message is the only thing that carries it.
+let currentPageName = ''
 
 function post(pluginMessage: unknown) {
   parent.postMessage({ pluginMessage }, '*')
@@ -486,7 +525,7 @@ function setSource(source: SourceTab) {
 
 function refreshCodeBox() {
   const source = code[activeCode]
-  copyCodeButton.disabled = source.length === 0
+  copyCodeButton.disabled = agentColumnOpen || source.length === 0
   copyCodeButton.textContent =
     activeCode === 'tsx' ? 'Copy TSX' : activeCode === 'html' ? 'Copy HTML' : 'Copy CSS'
 
@@ -1052,7 +1091,7 @@ relayToggle.addEventListener('change', () => {
   else bridge.disconnect()
 })
 
-type View = 'work' | 'relay' | 'auth'
+type View = 'work' | 'relay' | 'auth' | 'agent'
 
 let view: View = 'auth'
 
@@ -1112,6 +1151,7 @@ function setView(next: View) {
   if (next === 'auth') refreshAuthPage()
   workspace.hidden = next !== 'work'
   relayPage.hidden = next !== 'relay'
+  agentPage.hidden = next !== 'agent'
   authPage.hidden = next !== 'auth'
   footbar.hidden = next !== 'work'
   // The gate is a gate: with no session there is nothing behind it to reach, so
@@ -1124,9 +1164,20 @@ function setView(next: View) {
     refreshApi()
     void loadHealth()
   }
+  if (next === 'agent') {
+    agentPage.scrollTop = 0
+    refreshAgentPage()
+  }
 }
 
 relayPageToggle.addEventListener('click', () => setView(view === 'relay' ? 'work' : 'relay'))
+// The agent replaces the third column rather than covering the panel: the point
+// of a chat about a design is having the design next to it. The full page
+// behind "Setup" is the pairing and the reference, which you read once.
+agentPageToggle.addEventListener('click', () => {
+  if (view !== 'work') setView('work')
+  setAgentColumn(!agentColumnOpen)
+})
 
 // While minimised the strip itself restores: a 340px bar is an easier target
 // than one 24px button, and there is nothing else on it to click.
@@ -2026,6 +2077,7 @@ window.addEventListener('message', (event: MessageEvent) => {
       roots = toTreeNodes(msg.rows, 0)
       renderTree()
       if (!selectedId) {
+        currentPageName = msg.page
         title.textContent = msg.page
         const count = msg.rows.length === 1 ? '1 top-level layer' : `${msg.rows.length} top-level layers`
         subtitle.textContent = msg.truncated ? `${count} (truncated)` : count
@@ -2044,6 +2096,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     case 'selected': {
       selectedIds = msg.ids
       selectionRows = msg.rows
+      refreshAgentContext()
       if (msg.id && msg.id !== selectedId) selectedId = msg.id
       // A new selection invalidates any batch results shown against the old one.
       if (runSource === 'selection') {
@@ -2139,6 +2192,9 @@ window.addEventListener('message', (event: MessageEvent) => {
     case 'busy':
       setStatus('Extracting…')
       break
+    case 'agent-settings':
+      applyAgentSettings(msg)
+      break
     case 'error':
       setStatus(`Failed: ${msg.message}`)
       break
@@ -2154,6 +2210,664 @@ window.addEventListener('resize', () => {
     post({ type: 'resize', width: window.innerWidth, height: window.innerHeight })
   }, 400)
 })
+
+// -------------------------------------------------------------------- agent
+//
+// A chat inside the plugin, backed by a daemon on this machine holding an ACP
+// client for whichever coding harness the designer already has installed.
+//
+// The panel is that client's human interface, not the client itself: an agent
+// asks whoever it is talking to for a filesystem and a terminal, and an iframe
+// has neither. So the daemon owns the machine, this owns the person, and one
+// socket carries both halves — the conversation streaming down, and the tool
+// calls going back into `figma.*` through the very same request/response frames
+// the relay has always used.
+
+type AgentHarness = { id: string; name: string; command: string; available: boolean; note: string }
+
+type AgentSessionState = {
+  harness: { id: string; name: string } | null
+  sessionId: string | null
+  cwd: string
+  running: boolean
+  writes: boolean
+  auto: boolean
+  connected: boolean
+}
+
+type AgentPermissionOption = { optionId: string; name: string; kind: string }
+
+let agentUrl = AGENT_URL
+let agentToken = ''
+let agentCwd = ''
+let agentHarnessId = ''
+// Kept so a torn-down runtime can ask the harness to replay rather than forget.
+let agentSessionId = ''
+let agentSettingsLoaded = false
+let agentHarnesses: AgentHarness[] = []
+let agentStatus: BridgeStatus = 'off'
+let agentSession: AgentSessionState = {
+  harness: null,
+  sessionId: null,
+  cwd: '',
+  running: false,
+  writes: false,
+  auto: true,
+  connected: false,
+}
+// Both are remembered rather than re-chosen every morning: the daemon forgets
+// them when it restarts, so the panel is the side that knows.
+let agentWrites = false
+let agentAuto = true
+let agentPermission: { id: string; title: string; options: AgentPermissionOption[] } | null = null
+let agentColumnOpen = false
+
+/** The HTTP face of the daemon, given its socket address. */
+function agentHttpBase(): string {
+  return agentUrl.replace(/^ws/, 'http').replace(/\/panel$/, '')
+}
+
+function agentHeaders(): Record<string, string> {
+  return agentToken === '' ? {} : { 'x-figsnap-token': agentToken }
+}
+
+const agentBridge = createBridge({
+  label: 'daemon',
+  url: () => (agentToken === '' ? agentUrl : `${agentUrl}?token=${encodeURIComponent(agentToken)}`),
+  request: requestPlugin,
+  onStatus: (status: BridgeStatus, detail?: string) => {
+    agentStatus = status
+    if (status === 'open') {
+      // The daemon has no idea a panel appeared until one says so, and the
+      // answer is both the harness list and wherever the session had got to.
+      agentBridge.send({ kind: 'hello' })
+      agentBridge.send({ kind: 'writes', on: agentWrites })
+      agentBridge.send({ kind: 'auto', on: agentAuto })
+      void loadAgentTools()
+      if (agentCwd === '') void browseAgent(null)
+    }
+    if (detail !== undefined && status !== 'open') agentSetupNote.textContent = detail
+    refreshAgentPage()
+  },
+  onFrame: (message) => handleAgentFrame(message),
+})
+
+// --------------------------------------------------------------- transcript
+
+// Consecutive chunks of the same kind are one paragraph, not one per token.
+let agentLastBlock: { kind: string; text: HTMLParagraphElement } | null = null
+const agentToolBlocks = new Map<string, HTMLDivElement>()
+let agentPlanBlock: HTMLDivElement | null = null
+
+/** Sticks to the bottom only while the reader is already there. */
+function agentScroll() {
+  const nearBottom = agentLog.scrollHeight - agentLog.scrollTop - agentLog.clientHeight < 80
+  if (nearBottom) agentLog.scrollTop = agentLog.scrollHeight
+}
+
+function agentBlock(className: string, who: string): HTMLDivElement {
+  const block = document.createElement('div')
+  block.className = `agent-block ${className}`
+  if (who !== '') {
+    const label = document.createElement('span')
+    label.className = 'agent-who'
+    label.textContent = who
+    block.appendChild(label)
+  }
+  agentLog.appendChild(block)
+  return block
+}
+
+function agentChunk(kind: string, who: string, text: string) {
+  if (agentLastBlock === null || agentLastBlock.kind !== kind) {
+    const block = agentBlock(kind, who)
+    const paragraph = document.createElement('p')
+    paragraph.className = 'agent-text'
+    block.appendChild(paragraph)
+    agentLastBlock = { kind, text: paragraph }
+  }
+  agentLastBlock.text.textContent = (agentLastBlock.text.textContent ?? '') + text
+  agentScroll()
+}
+
+/** Ends the current run of chunks, so the next one starts its own paragraph. */
+function agentBreak() {
+  agentLastBlock = null
+}
+
+function agentNotice(level: string, text: string) {
+  const block = agentBlock(`notice ${level}`, level === 'harness' ? '' : level)
+  const paragraph = document.createElement('p')
+  paragraph.className = 'agent-text'
+  paragraph.textContent = text
+  block.appendChild(paragraph)
+  agentBreak()
+  agentScroll()
+}
+
+function agentClearLog() {
+  agentLog.textContent = ''
+  agentToolBlocks.clear()
+  agentPlanBlock = null
+  agentBreak()
+}
+
+/** Whatever a content block says, as one line of text. */
+function agentContentText(content: unknown): string {
+  const block = content as { type?: string; text?: string } | undefined
+  if (block === undefined) return ''
+  if (block.type === 'text' && typeof block.text === 'string') return block.text
+  return `[${block.type ?? 'content'}]`
+}
+
+function agentToolBlock(update: Record<string, unknown>) {
+  const id = String(update.toolCallId ?? '')
+  if (id === '') return
+  let block = agentToolBlocks.get(id)
+  if (block === undefined) {
+    block = document.createElement('div')
+    block.className = 'agent-tool'
+    const title = document.createElement('span')
+    title.className = 'title'
+    const status = document.createElement('span')
+    status.className = 'status'
+    block.append(title, status)
+    agentLog.appendChild(block)
+    agentToolBlocks.set(id, block)
+    agentBreak()
+  }
+  const title = block.querySelector('.title') as HTMLSpanElement
+  const status = block.querySelector('.status') as HTMLSpanElement
+  if (typeof update.title === 'string') title.textContent = update.title
+  const state = typeof update.status === 'string' ? update.status : 'pending'
+  status.textContent = state
+  block.className = `agent-tool ${state}`
+  agentScroll()
+}
+
+function agentPlan(entries: unknown) {
+  const rows = Array.isArray(entries) ? (entries as { content?: string; status?: string }[]) : []
+  if (agentPlanBlock === null) {
+    agentPlanBlock = agentBlock('plan', 'plan')
+    const list = document.createElement('ol')
+    list.className = 'agent-plan'
+    agentPlanBlock.appendChild(list)
+    agentBreak()
+  }
+  const list = agentPlanBlock.querySelector('.agent-plan') as HTMLOListElement
+  list.textContent = ''
+  for (const row of rows) {
+    const item = document.createElement('li')
+    item.className = row.status ?? ''
+    item.textContent = row.content ?? ''
+    list.appendChild(item)
+  }
+  agentScroll()
+}
+
+// ------------------------------------------------------------------- frames
+
+function handleAgentFrame(message: Record<string, unknown>) {
+  switch (message.kind) {
+    case 'harnesses':
+      agentHarnesses = (message.harnesses as AgentHarness[]) ?? []
+      // A stored choice that is no longer installed should not stay selected.
+      if (agentHarnessId !== '' && !agentHarnesses.some((harness) => harness.id === agentHarnessId)) {
+        agentHarnessId = ''
+      }
+      refreshAgentPage()
+      break
+
+    case 'state': {
+      const next = message as unknown as AgentSessionState
+      const opened = next.sessionId !== null && next.sessionId !== agentSession.sessionId
+      agentSession = next
+      if (next.sessionId !== null && next.sessionId !== agentSessionId) {
+        agentSessionId = next.sessionId
+        saveAgentSettings()
+      }
+      if (next.harness !== null) agentHarnessId = next.harness.id
+      if (next.cwd !== '') agentCwd = next.cwd
+      // A fresh session id means a fresh conversation; a resumed one replays
+      // into the same log, so only the former clears it.
+      if (opened && agentLog.childElementCount > 0 && agentSession.running === false) agentClearLog()
+      refreshAgentPage()
+      break
+    }
+
+    case 'update': {
+      const update = (message.update ?? {}) as Record<string, unknown>
+      switch (update.sessionUpdate) {
+        case 'user_message_chunk':
+          agentChunk('user', 'you', agentContentText(update.content))
+          break
+        case 'agent_message_chunk':
+          agentChunk('assistant', 'agent', agentContentText(update.content))
+          break
+        case 'agent_thought_chunk':
+          agentChunk('thought', 'thinking', agentContentText(update.content))
+          break
+        case 'tool_call':
+        case 'tool_call_update':
+          agentToolBlock(update)
+          break
+        case 'plan':
+        case 'plan_update':
+          agentPlan(update.entries)
+          break
+        default:
+          // Modes, commands and the rest of the stream are not rendered yet.
+          break
+      }
+      break
+    }
+
+    case 'permission':
+      agentPermission = {
+        id: String(message.id ?? ''),
+        title: String((message.toolCall as { title?: string } | undefined)?.title ?? 'this action'),
+        options: ((message.options as AgentPermissionOption[]) ?? []).filter((option) => option && option.optionId),
+      }
+      // A turn stalls until this is answered, so it is brought into view rather
+      // than left waiting behind whichever column the designer was reading.
+      if (view === 'work' && !agentColumnOpen) setAgentColumn(true)
+      refreshAgentPermission()
+      break
+
+    case 'turn':
+      agentBreak()
+      if (message.status === 'started') {
+        agentTurnLine.textContent = 'Answering…'
+      } else {
+        const reason = String(message.stopReason ?? 'end_turn')
+        agentTurnLine.textContent =
+          reason === 'end_turn'
+            ? ''
+            : reason === 'cancelled'
+              ? 'Stopped.'
+              : reason === 'error'
+                ? `Failed: ${String(message.error ?? 'unknown')}`
+                : `Stopped: ${reason}`
+        // A permission left standing after the turn ended can never be answered.
+        agentPermission = null
+        refreshAgentPermission()
+      }
+      break
+
+    case 'notice':
+      agentNotice(String(message.level ?? 'info'), String(message.text ?? ''))
+      break
+
+    default:
+      break
+  }
+}
+
+// ------------------------------------------------------------------ chrome
+
+function refreshAgentPermission() {
+  agentPermissionBox.hidden = agentPermission === null
+  if (agentPermission === null) return
+  agentPermissionTitle.textContent = `Allow ${agentPermission.title}?`
+  agentPermissionOptions.textContent = ''
+  for (const option of agentPermission.options) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = option.kind?.startsWith('allow') ? 'button primary' : 'button secondary'
+    button.textContent = option.name
+    button.addEventListener('click', () => answerAgentPermission(option.optionId))
+    agentPermissionOptions.appendChild(button)
+  }
+}
+
+function answerAgentPermission(optionId: string | null) {
+  if (agentPermission === null) return
+  agentBridge.send({ kind: 'permission', id: agentPermission.id, optionId })
+  agentPermission = null
+  refreshAgentPermission()
+}
+
+function refreshAgentHarnesses() {
+  agentHarnessChips.textContent = ''
+  // Every harness is listed whether or not it is installed, so the answer to
+  // "why can I not pick Codex" is on screen. When none are installed the chips
+  // alone would read as a puzzle, so it is said outright.
+  if (agentHarnesses.length === 0 || !agentHarnesses.some((harness) => harness.available)) {
+    const note = document.createElement('span')
+    note.className = 'subtitle'
+    note.textContent =
+      agentStatus !== 'open'
+        ? 'Connect to see what this machine can launch.'
+        : 'No harness found. Install Claude Code, Codex or the Gemini CLI, sign in to it once, then restart the daemon.'
+    agentHarnessChips.appendChild(note)
+    if (agentHarnesses.length === 0) return
+  }
+  for (const harness of agentHarnesses) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = `chip${harness.id === agentHarnessId ? ' current' : ''}`
+    chip.textContent = harness.available ? harness.name : `${harness.name} — not installed`
+    chip.title = harness.available ? harness.command : harness.note
+    chip.disabled = !harness.available || agentSession.harness !== null
+    chip.addEventListener('click', () => {
+      agentHarnessId = harness.id
+      saveAgentSettings()
+      refreshAgentPage()
+    })
+    agentHarnessChips.appendChild(chip)
+  }
+}
+
+/**
+ * Swaps the third column between the generated code and the conversation. The
+ * tab strip goes with the code: one column doing one job at a time beats two
+ * doing halves of each.
+ */
+function setAgentColumn(on: boolean) {
+  agentColumnOpen = on
+  agentColumn.hidden = !on
+  codeNav.hidden = on
+  editor.hidden = on
+  agentPageToggle.textContent = on ? 'Code' : 'Agent'
+  if (on) {
+    refreshAgentPage()
+    agentInput.focus()
+  }
+  // Either way the footer's copy button has to agree with what is on screen.
+  refreshCodeBox()
+}
+
+/** A directory is too long for the strip; its last part is what identifies it. */
+function shortDirectory(path: string): string {
+  const parts = path.split('/').filter((part) => part !== '')
+  return parts.length === 0 ? path : parts[parts.length - 1]
+}
+
+/**
+ * What goes to the agent alongside the words, and it is on by default: a
+ * designer asking "make this match our button" is pointing at the canvas, and
+ * an agent that has to guess will guess wrong or waste a turn asking.
+ *
+ * Only the identity travels — names, types, sizes, node ids. The design itself
+ * stays behind the tools, so a short question does not carry a hundred
+ * kilobytes of CSS with it.
+ */
+function agentContext(): { page: string; rows: TreeRow[] } | null {
+  if (!agentContextOn.checked || selectionRows.length === 0) return null
+  return { page: currentPageName, rows: selectionRows.slice(0, 10) }
+}
+
+function refreshAgentContext() {
+  const count = selectionRows.length
+  agentContextLabel.textContent =
+    count === 0
+      ? 'Nothing selected'
+      : count === 1
+        ? `Selection: ${selectionRows[0].name}`
+        : `Selection: ${count} layers`
+  agentContextOn.disabled = count === 0
+  agentContextRow.title =
+    count === 0
+      ? 'Select a layer on the canvas and it travels with your next message.'
+      : selectionRows.map((row) => `${row.name} — ${row.type} ${row.width}×${row.height}`).join('\n')
+}
+
+function refreshAgentStrip() {
+  const live = agentSession.sessionId !== null
+  agentSessionLabel.textContent = live
+    ? `${agentSession.harness?.name ?? 'Session'} · ${shortDirectory(agentSession.cwd)}`
+    : agentStatus === 'open'
+      ? agentHarnessId === ''
+        ? 'Pick a harness in Setup'
+        : agentCwd === ''
+          ? 'Pick a directory in Setup'
+          : `Ready · ${agentHarnesses.find((harness) => harness.id === agentHarnessId)?.name ?? agentHarnessId}`
+      : 'Not connected — open Setup'
+  agentIdle.hidden = live
+  agentIdle.textContent =
+    agentStatus === 'open'
+      ? 'Start a session to chat about this file.'
+      : 'Run npm run agent in the plugin’s project, then pair it under Setup.'
+}
+
+function refreshAgentPage() {
+  agentDot.className = `dot ${agentStatus}`
+  agentConn.textContent = STATE_TEXT[agentStatus]
+  // A retry loop refreshes this page every few seconds, and the fields are
+  // where someone is typing the address and token that would end it.
+  const fill = (field: HTMLInputElement, value: string) => {
+    if (field !== document.activeElement) field.value = value
+  }
+  fill(agentUrlInput, agentUrl)
+  fill(agentTokenInput, agentToken)
+  fill(agentCwdInput, agentCwd)
+  agentWritesToggle.checked = agentSession.writes
+  agentWritesToggle.disabled = agentStatus !== 'open'
+  agentAutoToggle.checked = agentSession.auto
+  agentAutoToggle.disabled = agentStatus !== 'open'
+  agentAutoToggle.title = agentSession.auto
+    ? 'Every permission the harness asks for is answered yes, and recorded in the transcript. Allow edits still decides whether the canvas can be touched at all.'
+    : 'Each action the harness considers sensitive waits for you.'
+
+  refreshAgentHarnesses()
+
+  const live = agentSession.sessionId !== null
+  agentStartButton.hidden = live
+  agentStopButton.hidden = !live
+  agentStartButton.disabled = agentStatus !== 'open' || agentHarnessId === '' || agentCwd === ''
+  agentChat.hidden = !live
+  agentSendButton.disabled = !live || agentSession.running
+  agentCancelButton.hidden = !agentSession.running
+  agentInput.disabled = !live
+
+  if (agentStatus === 'open' && !live) {
+    agentSetupNote.textContent =
+      agentHarnessId === ''
+        ? 'Pick a harness.'
+        : agentCwd === ''
+          ? 'Pick the project directory the agent should work in.'
+          : `Ready. Start the session from the Agent column.`
+  } else if (agentStatus === 'open' && live) {
+    agentSetupNote.textContent = `${agentSession.harness?.name ?? 'Session'} in ${agentSession.cwd}`
+  } else if (agentStatus === 'off') {
+    agentSetupNote.textContent = 'Not connected. Run npm run agent in the plugin\'s project, then paste its token.'
+  }
+
+  refreshAgentStrip()
+  refreshAgentContext()
+  refreshAgentPermission()
+}
+
+agentSetupLink.addEventListener('click', () => setView('agent'))
+
+// -------------------------------------------------------------- directories
+
+/**
+ * The working-directory picker. It is a filesystem question, which is exactly
+ * what a plugin iframe cannot answer, so the daemon answers it — directories
+ * only, dotfiles hidden, and read-only.
+ */
+async function browseAgent(path: string | null) {
+  try {
+    const query = path === null ? '' : `?path=${encodeURIComponent(path)}`
+    const response = await fetch(`${agentHttpBase()}/fs${query}`, { headers: agentHeaders() })
+    if (!response.ok) throw new Error(`The daemon refused to browse (${response.status})`)
+    const data = (await response.json()) as {
+      path: string
+      parent: string | null
+      directories: string[]
+      isProject: boolean
+    }
+    agentCwd = data.path
+    agentCwdUp.disabled = data.parent === null
+    agentCwdUp.dataset.parent = data.parent ?? ''
+    agentDirChips.textContent = ''
+    for (const name of data.directories) {
+      const chip = document.createElement('button')
+      chip.type = 'button'
+      chip.className = 'chip'
+      chip.textContent = name
+      chip.addEventListener('click', () => void browseAgent(`${data.path}/${name}`))
+      agentDirChips.appendChild(chip)
+    }
+    saveAgentSettings()
+    refreshAgentPage()
+  } catch (error) {
+    agentSetupNote.textContent = error instanceof Error ? error.message : String(error)
+  }
+}
+
+/** The tool list, so the designer can see exactly what the agent was handed. */
+async function loadAgentTools() {
+  try {
+    const response = await fetch(`${agentHttpBase()}/tools`, { headers: agentHeaders() })
+    if (!response.ok) return
+    const data = (await response.json()) as {
+      tools: { name: string; title: string; description: string; annotations?: { readOnlyHint?: boolean } }[]
+    }
+    agentToolList.textContent = ''
+    for (const tool of data.tools) {
+      const row = document.createElement('div')
+      row.className = 'card tight'
+      const head = document.createElement('div')
+      head.className = 'card-row'
+      const name = document.createElement('code')
+      name.textContent = tool.name
+      const kind = document.createElement('span')
+      kind.className = 'subtitle'
+      kind.textContent = tool.annotations?.readOnlyHint === false ? 'edits the file' : 'read only'
+      head.append(name, document.createElement('span'), kind)
+      ;(head.children[1] as HTMLSpanElement).className = 'spacer'
+      const body = document.createElement('p')
+      body.className = 'subtitle'
+      body.style.margin = '0'
+      body.textContent = tool.description
+      row.append(head, body)
+      agentToolList.appendChild(row)
+    }
+  } catch {
+    // The list is a courtesy; the session works without it.
+  }
+}
+
+// ------------------------------------------------------------------ actions
+
+function saveAgentSettings() {
+  if (!agentSettingsLoaded) return
+  post({
+    type: 'save-agent-settings',
+    url: agentUrl,
+    token: agentToken,
+    cwd: agentCwd,
+    harness: agentHarnessId,
+    sessionId: agentSessionId,
+    writes: agentWrites,
+    auto: agentAuto,
+  })
+}
+
+function connectAgent() {
+  agentUrl = agentUrlInput.value.trim() === '' ? AGENT_URL : agentUrlInput.value.trim()
+  agentToken = agentTokenInput.value.trim()
+  saveAgentSettings()
+  agentBridge.disconnect()
+  agentBridge.connect()
+}
+
+agentConnectButton.addEventListener('click', connectAgent)
+
+agentCwdUp.addEventListener('click', () => {
+  const parent = agentCwdUp.dataset.parent
+  if (parent) void browseAgent(parent)
+})
+
+agentCwdInput.addEventListener('change', () => void browseAgent(agentCwdInput.value.trim()))
+
+agentWritesToggle.addEventListener('change', () => {
+  agentWrites = agentWritesToggle.checked
+  agentBridge.send({ kind: 'writes', on: agentWrites })
+  saveAgentSettings()
+})
+
+agentAutoToggle.addEventListener('change', () => {
+  agentAuto = agentAutoToggle.checked
+  agentBridge.send({ kind: 'auto', on: agentAuto })
+  saveAgentSettings()
+})
+
+agentStartButton.addEventListener('click', () => {
+  agentStartButton.disabled = true
+  agentSetupNote.textContent = 'Starting the harness. A first run downloads it, which can take a few minutes.'
+  agentBridge.send({
+    kind: 'start',
+    harness: agentHarnessId,
+    cwd: agentCwd,
+    // A stored id from a previous run is offered, not insisted on: the daemon
+    // falls back to a new session when the harness cannot load it.
+    resume: agentSessionId,
+  })
+})
+
+agentStopButton.addEventListener('click', () => {
+  agentBridge.send({ kind: 'stop' })
+  agentSessionId = ''
+  saveAgentSettings()
+  agentClearLog()
+})
+
+agentCancelButton.addEventListener('click', () => agentBridge.send({ kind: 'cancel' }))
+
+function sendAgentPrompt() {
+  const text = agentInput.value.trim()
+  if (text === '' || agentSession.running || agentSession.sessionId === null) return
+  const context = agentContext()
+  agentChunk('user', 'you', text)
+  if (context !== null) {
+    agentChunk('context', 'with', context.rows.map((row) => row.name).join(', '))
+  }
+  agentBreak()
+  agentInput.value = ''
+  agentBridge.send({ kind: 'prompt', text, ...(context === null ? {} : { context }) })
+}
+
+agentComposer.addEventListener('submit', (event: Event) => {
+  event.preventDefault()
+  sendAgentPrompt()
+})
+
+// Enter sends, Shift-Enter is a newline: this is a chat box, not a document.
+agentInput.addEventListener('keydown', (event: KeyboardEvent) => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
+    sendAgentPrompt()
+  }
+})
+
+function applyAgentSettings(settings: {
+  url: string
+  token: string
+  cwd: string
+  harness: string
+  sessionId: string
+  writes?: boolean
+  auto?: boolean
+}) {
+  agentUrl = settings.url === '' ? AGENT_URL : settings.url
+  agentToken = settings.token
+  agentCwd = settings.cwd
+  agentHarnessId = settings.harness
+  agentSessionId = settings.sessionId
+  agentWrites = settings.writes === true
+  // Asking every time is the safe default but not the useful one, and the gate
+  // that matters is `writes`. Absent means a panel that predates this setting.
+  agentAuto = settings.auto !== false
+  agentSession = { ...agentSession, writes: agentWrites, auto: agentAuto }
+  agentSettingsLoaded = true
+  refreshAgentPage()
+  // A stored token means the daemon was paired before; dialling straight away
+  // is the difference between the chat being there and being three clicks away.
+  if (agentToken !== '') agentBridge.connect()
+}
 
 setAuthMode('login')
 post({ type: 'ready' })
