@@ -53,9 +53,32 @@ export function makeNode(id, name, type = 'FRAME', children = [], css = { width:
     fills: [],
     strokes: [],
     strokeWeight: 1,
+    layoutSizingHorizontal: 'FIXED',
+    layoutSizingVertical: 'FIXED',
     appendChild(child) {
+      if (child.parent?.children) {
+        const at = child.parent.children.indexOf(child)
+        if (at !== -1) child.parent.children.splice(at, 1)
+      }
       child.parent = node
       node.children.push(child)
+    },
+    insertChild(index, child) {
+      if (child.parent?.children) {
+        const at = child.parent.children.indexOf(child)
+        if (at !== -1) child.parent.children.splice(at, 1)
+      }
+      child.parent = node
+      node.children.splice(index, 0, child)
+    },
+    remove() {
+      const at = node.parent?.children?.indexOf(node) ?? -1
+      if (at !== -1) node.parent.children.splice(at, 1)
+      node.removed = true
+    },
+    resize(width, height) {
+      node.width = width
+      node.height = height
     },
     strokeAlign: 'INSIDE',
     effects: [],
@@ -83,6 +106,28 @@ export function makeNode(id, name, type = 'FRAME', children = [], css = { width:
           },
         }
       : {}),
+    clone() {
+      const copy = makeNode(`${id}-copy`, name, type, [], css)
+      copy.width = node.width
+      copy.height = node.height
+      copy.fills = node.fills
+      return copy
+    },
+    setFillStyleIdAsync(styleId) {
+      node.fillStyleId = styleId
+      return Promise.resolve()
+    },
+    setTextStyleIdAsync(styleId) {
+      node.textStyleId = styleId
+      return Promise.resolve()
+    },
+    setEffectStyleIdAsync(styleId) {
+      node.effectStyleId = styleId
+      return Promise.resolve()
+    },
+    setBoundVariable(field, variable) {
+      node.boundVariables = { ...(node.boundVariables ?? {}), [field]: variable.id }
+    },
     async getCSSAsync() {
       return css
     },
@@ -119,6 +164,15 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
   let toPanel = () => {}
 
   // Figma always sets parent; the Figma-CSS renderer reads it on the root.
+  /** Everything under the current page, which is what findAllWithCriteria walks. */
+  const walk = (list, into = []) => {
+    for (const node of list) {
+      into.push(node)
+      if (node.children?.length) walk(node.children, into)
+    }
+    return into
+  }
+
   const page = {
     id: 'p1',
     name: 'Page 1',
@@ -127,11 +181,34 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
     selection: [],
     parent: null,
     appendChild(child) {
+      if (child.parent?.children) {
+        const at = child.parent.children.indexOf(child)
+        if (at !== -1) child.parent.children.splice(at, 1)
+      }
       child.parent = page
       pageChildren.push(child)
     },
+    insertChild(index, child) {
+      if (child.parent?.children) {
+        const at = child.parent.children.indexOf(child)
+        if (at !== -1) child.parent.children.splice(at, 1)
+      }
+      child.parent = page
+      pageChildren.splice(index, 0, child)
+    },
+    findAllWithCriteria({ types }) {
+      return walk(pageChildren).filter((node) => types.includes(node.type))
+    },
   }
   for (const child of pageChildren) child.parent = page
+
+  /** Ids for anything the plugin creates during a run. */
+  let created = 0
+  const born = (name, type) => {
+    const node = makeNode(`new:${++created}`, name, type)
+    nodes.set(node.id, node)
+    return node
+  }
 
   const figma = {
     root: { id: 'doc-1' },
@@ -164,23 +241,76 @@ export async function startPlugin({ pageChildren = [], offPage = [], label = 'pl
       figma.versions.push({ title, description })
       return { id: `v${figma.versions.length}` }
     },
-    async loadFontAsync() {},
+    // Only the fonts this "machine" has. A plugin that substitutes silently is
+    // the failure the real one is careful to avoid, so the fake refuses too.
+    fonts: ['Inter'],
+    async loadFontAsync(font) {
+      if (!figma.fonts.includes(font.family)) throw new Error(`no ${font.family}`)
+    },
     createFrame() {
-      let created = 0
-      created = nodes.size
-      const frame = makeNode(`new:${created}`, 'Frame')
-      frame.resize = (width, height) => {
-        frame.width = width
-        frame.height = height
-      }
-      nodes.set(frame.id, frame)
-      return frame
+      return born('Frame', 'FRAME')
+    },
+    createText() {
+      const node = born('Text', 'TEXT')
+      node.characters = ''
+      node.hasMissingFont = false
+      node.getRangeAllFontNames = () => [node.fontName]
+      return node
+    },
+    createRectangle() {
+      return born('Rectangle', 'RECTANGLE')
+    },
+    createEllipse() {
+      return born('Ellipse', 'ELLIPSE')
+    },
+    createNodeFromSvg(svg) {
+      if (!svg.includes('<svg')) throw new Error('not svg')
+      const node = born('Vector', 'FRAME')
+      node.svg = svg
+      return node
+    },
+    // The style and variable side of a design system, enough for the tools that
+    // read it and the two that write through it.
+    styles: new Map(),
+    async getStyleByIdAsync(id) {
+      return figma.styles.get(id) ?? null
+    },
+    async getLocalPaintStylesAsync() {
+      return [...figma.styles.values()].filter((style) => style.type === 'PAINT')
+    },
+    async getLocalTextStylesAsync() {
+      return [...figma.styles.values()].filter((style) => style.type === 'TEXT')
+    },
+    async getLocalEffectStylesAsync() {
+      return [...figma.styles.values()].filter((style) => style.type === 'EFFECT')
+    },
+    variables: {
+      store: new Map(),
+      collections: [],
+      async getLocalVariableCollectionsAsync() {
+        return figma.variables.collections
+      },
+      async getLocalVariablesAsync() {
+        return [...figma.variables.store.values()]
+      },
+      async getVariableByIdAsync(id) {
+        return figma.variables.store.get(id) ?? null
+      },
+      setBoundVariableForPaint(paint, field, variable) {
+        return { ...paint, boundVariables: { [field]: { type: 'VARIABLE_ALIAS', id: variable.id } } }
+      },
     },
     closePlugin() {},
     openExternal() {},
     notify() {},
     async getNodeByIdAsync(id) {
-      return nodes.get(id) ?? null
+      const known = nodes.get(id)
+      if (known !== undefined) return known.removed ? null : known
+      // Clones and anything else a mutation produced are in the tree before
+      // they are in the index, so the tree is the fallback.
+      const found = walk(pageChildren).find((node) => node.id === id)
+      if (found !== undefined) nodes.set(id, found)
+      return found ?? null
     },
     async loadAllPagesAsync() {},
     async setCurrentPageAsync() {},

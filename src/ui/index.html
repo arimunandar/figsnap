@@ -20,7 +20,7 @@
       <button id="refresh" class="button icon" type="button" title="Re-extract">&#8635;</button>
       <button id="mini-save" class="button primary mini-only" type="button" title="Save the selection" disabled>Save</button>
       <button id="minimise" class="button icon" type="button" title="Minimise — clears the canvas so you can select">&#8211;</button>
-      <button id="agent-toggle-page" class="button icon topbar-button" type="button">Agent</button>
+      <button id="agent-toggle-page" class="button icon topbar-button" type="button">Code</button>
       <button id="relay-toggle-page" class="button icon topbar-button" type="button">Relay</button>
     </header>
 
@@ -155,11 +155,14 @@
           </label>
         </div>
 
-        <button id="save-selection" class="button secondary" type="button" disabled>Save selection</button>
+        <div class="preview-actions">
+          <button id="add-context" class="button secondary" type="button" disabled>Add to context</button>
+          <button id="save-selection" class="button secondary" type="button" disabled>Save selection</button>
+        </div>
       </section>
 
       <section class="code-column">
-        <nav class="segmented" id="code-tabs">
+        <nav class="segmented" id="code-tabs" hidden>
           <button class="seg active" type="button" data-code="tsx">React</button>
           <button class="seg" type="button" data-code="html">HTML</button>
           <button class="seg" type="button" data-code="moduleCss">Module CSS</button>
@@ -167,27 +170,40 @@
           <button class="seg" type="button" data-code="figmaCss">Figma CSS</button>
         </nav>
 
-        <div class="agent-column" id="agent-column" hidden>
-          <div class="agent-strip">
+        <div class="agent-column" id="agent-column">
+          <header class="agent-strip">
             <span class="agent-title">Agent</span>
-            <span class="card-state" id="agent-session">No session</span>
+            <button class="agent-session" type="button" id="agent-session" aria-haspopup="true"
+              aria-expanded="false" title="Choose the project folder">No session</button>
+            <div class="command-menu folder-menu" id="agent-folder-menu" hidden>
+              <div class="folder-head">
+                <button class="icon-button" type="button" id="agent-folder-up" title="Up one level">&#8593;</button>
+                <span class="folder-path" id="agent-folder-path"></span>
+              </div>
+              <div class="folder-list" id="agent-folder-list"></div>
+              <button class="button primary folder-pick" type="button" id="agent-folder-use">Use this folder</button>
+            </div>
             <span class="spacer"></span>
-            <label class="check">
-              <input type="checkbox" id="agent-writes" />
-              <span>Allow edits</span>
-            </label>
-            <label class="check">
-              <input type="checkbox" id="agent-auto" checked />
-              <span>Auto-approve</span>
-            </label>
-            <button class="button secondary" type="button" id="agent-setup-link">Setup</button>
-            <button class="button secondary" type="button" id="agent-stop" hidden>End</button>
-            <button class="button primary" type="button" id="agent-start" disabled>Start session</button>
-          </div>
+            <button class="toggle" type="button" id="agent-writes" aria-pressed="false"
+              title="Allow the agent to change this file">Edits</button>
+            <button class="button primary" type="button" id="agent-start" disabled>Start</button>
+            <button class="icon-button" type="button" id="agent-more" aria-haspopup="true"
+              aria-expanded="false" title="Session">&#8943;</button>
+            <div class="command-menu more-menu" id="agent-more-menu" hidden>
+              <button class="command" type="button" id="agent-setup-link">
+                <span class="name">Setup</span>
+                <span class="about">Daemon, harness and directory</span>
+              </button>
+              <button class="command" type="button" id="agent-stop">
+                <span class="name">End session</span>
+                <span class="about">Stops the harness</span>
+              </button>
+            </div>
+          </header>
 
-          <p class="placeholder pad" id="agent-idle">
-            Start a session to chat about this file.
-          </p>
+          <div class="agent-empty" id="agent-idle">
+            <p class="agent-empty-line">Start a session to talk about this file.</p>
+          </div>
 
           <div class="agent-chat" id="agent-chat" hidden>
             <div class="agent-log" id="agent-log"></div>
@@ -195,24 +211,39 @@
             <div class="agent-permission" id="agent-permission" hidden>
               <p class="agent-permission-title" id="agent-permission-title"></p>
               <div class="agent-permission-options" id="agent-permission-options"></div>
+              <button class="link-button" type="button" id="agent-permission-always">
+                Allow these without asking for the rest of this session
+              </button>
             </div>
 
-            <label class="agent-context" id="agent-context">
-              <input type="checkbox" id="agent-context-on" checked />
-              <span id="agent-context-label">Nothing selected</span>
-            </label>
-
-            <form class="agent-composer" id="agent-composer">
-              <textarea id="agent-input" class="text-input agent-input" rows="2" spellcheck="false"
-                placeholder="Ask about the selection, or ask for a change. Enter sends."></textarea>
-              <button class="button secondary" type="button" id="agent-cancel" hidden>Stop</button>
-              <button class="button primary" type="submit" id="agent-send">Send</button>
+            <form class="composer" id="agent-composer">
+              <textarea id="agent-input" class="composer-input" rows="1" spellcheck="false"
+                placeholder="Ask about the selection"></textarea>
+              <div class="composer-context" id="agent-context-row" hidden>
+                <div class="context-chips" id="agent-context-chips"></div>
+              </div>
+              <div class="composer-bar">
+                <button class="icon-button" type="button" id="agent-context-add"
+                  title="Add what is selected on the canvas">&#43;</button>
+                <button class="icon-button" type="button" id="agent-context-follow" hidden
+                  title="Follow the canvas selection again">&#8635;</button>
+                <span class="composer-note" id="agent-context-label">Nothing selected</span>
+                <span class="spacer"></span>
+                <span class="composer-note" id="agent-turn"></span>
+                <button class="mode-picker" type="button" id="agent-mode" hidden
+                  aria-haspopup="true" aria-expanded="false"></button>
+                <div class="command-menu mode-menu" id="agent-mode-menu" hidden></div>
+                <button class="send" type="button" id="agent-cancel" hidden title="Stop">&#9632;</button>
+                <button class="send" type="submit" id="agent-send" title="Send">&#8593;</button>
+              </div>
+              <div class="command-menu" id="agent-commands" hidden></div>
+              <div class="command-menu attach-menu" id="agent-attach-menu" hidden></div>
+              <input type="file" id="agent-file" multiple hidden />
             </form>
-            <p class="subtitle" id="agent-turn"></p>
           </div>
         </div>
 
-        <div class="editor" id="editor">
+        <div class="editor" id="editor" hidden>
           <div class="gutter" id="gutter" aria-hidden="true"></div>
           <div class="code-view" id="code-view"><p class="placeholder pad">Code appears here.</p></div>
         </div>
@@ -272,6 +303,21 @@
 
         <h2>What the agent can reach</h2>
         <p>
+          The chips on the composer are what travels with each message: names,
+          types, sizes and node ids, never the design itself, which the agent
+          fetches with a tool when it needs it. The list follows your canvas
+          selection until you pin something with <strong>+</strong>, which is how
+          two layers can be in front of the agent at once. <strong>+</strong>
+          also attaches a file — an image, a PDF, a spec — where the harness
+          says it can read one, and a render of the pinned layer goes along
+          automatically to harnesses that read images.
+        </p>
+        <p>
+          Type while it is answering and the message queues rather than being
+          refused. A slash offers whatever commands the harness publishes, and
+          the picker beside Send switches its own modes.
+        </p>
+        <p>
           Reading is always on: the selection, the layer tree, and the full
           extraction — the same HTML measured against what Figma draws, the same
           byte-exact <code>figmaCss</code>, images inlined and icons as real SVG.
@@ -279,13 +325,13 @@
           and asking over a capped API.
         </p>
         <p>
-          Two switches sit on the Agent column, and they do different jobs.
-          <strong>Allow edits</strong> decides whether the canvas can be touched
-          at all; it starts off, and a harness told to skip its own permission
-          prompts still cannot get past it. <strong>Auto-approve</strong> starts
-          on and only decides who answers the harness when it asks — you, or the
-          daemon on your behalf. Every automatic yes is written into the
-          transcript, so nothing happens off the record.
+          <strong>Edits</strong> in the Agent column decides whether the canvas
+          can be touched at all; it starts off, and a harness told to skip its
+          own permission prompts still cannot get past it. Who answers those
+          prompts is a different question with no switch of its own: the
+          harness's modes answer it where it publishes them, and otherwise the
+          daemon answers for you, writes each one into the transcript, and puts
+          the way back on that line.
         </p>
         <p>
           Each edit is committed as one undo step, so one <strong>Cmd-Z</strong>

@@ -144,6 +144,7 @@ build.mjs          esbuild build; inlines the UI into a single HTML file
 src/code.ts        Main thread: tree, export, CSS/TSX generation
 src/ui/main.ts     UI thread: tree rendering, tabs, clipboard, download
 src/ui/bridge.ts   UI thread: WebSocket link to the relay and to the daemon
+src/ui/markdown.ts UI thread: the Markdown subset an agent actually writes
 agent/index.mjs    The local bridge daemon: WS server, ACP client, MCP server
 agent/lib/tools.mjs   The figma_* tools an agent is handed
 agent/mcp-stdio.mjs   The MCP server a harness spawns; proxies into the plugin
@@ -346,12 +347,16 @@ this plugin never sees a model key. To use something else, name it yourself:
 FIGSNAP_AGENT_COMMAND='npx -y @agentclientprotocol/some-adapter' npm run agent
 ```
 
-**2. Press Agent** in the plugin's top bar. The chat takes over the third
-column — the one that normally shows the generated code — so the layer tree and
-the preview stay beside it. Press **Setup** in the strip to pair: paste the
-token, **Connect**, then pick a harness and the project directory the agent
-should work in. The token is stored per user like the relay's, so pairing is a
-one-time job; after that the strip's **Start session** is the whole ritual.
+**2. Open the plugin.** The third column is the chat — it takes the place of the
+generated code, so the layer tree and the preview stay beside it. The **Code**
+button in the top bar swaps back.
+
+Pair once from **⋯ → Setup**: paste the token, **Connect**, pick a harness. Then
+click the folder name at the top of the column to choose the project the agent
+works in, and press **Start**. The token and the folder are stored per user, so
+after the first time **Start** is the whole ritual. Changing the folder later is
+the same click; on a live session it says that it restarts the session, because
+the working directory is fixed when the session opens.
 
 **3. Ask for something.**
 
@@ -360,20 +365,48 @@ one-time job; after that the strip's **Start session** is the whole ritual.
 > make the CTA match our Button component in src/components
 
 Whatever is selected on the canvas travels with each message by default — names,
-types, sizes and node ids, not the design itself, which is a tool call away. The
-checkbox above the composer turns that off for one message or for good.
+types, sizes and node ids, not the design itself, which is a tool call away. It
+shows above the composer as a row of chips.
 
-Reading is always on. Two switches on the strip govern the rest, and they are
-not the same switch:
+The list follows your selection until you touch it. **+** offers two things:
+pin what is selected, or attach a file. Pinning stops the list following, so you
+can select something else and add that too — which is what *"make the button
+match the sheet"* needs, since only one of those two can be selected at a time.
+**✕** drops a chip, **⟳** goes back to following, and an empty list sends
+nothing. Ten layers is the most one message carries. **Add to context** beside
+the preview does the same thing from where you are already looking at the layer.
 
-- **Allow edits** decides whether the canvas can be touched at all. Off by
-  default. It is enforced by the daemon rather than the agent, so a harness run
-  without permission prompts still cannot get past it.
-- **Auto-approve** decides who answers the harness when it *does* ask. On by
-  default, because being asked twice for one change helps nobody. Every
-  automatic yes is written into the transcript.
+Where the harness says it reads images, a render of the first pinned layer goes
+with the message too — a model that can look at the frame settles questions
+about spacing and colour that no description would. Attached files ride as
+images or as embedded resources depending on what the harness takes; anything it
+takes neither of is reported rather than dropped in silence.
 
-Both are remembered per user. Each approved edit is committed with
+Type while it is still answering and the message queues, shown dimmed until its
+turn. **Stop** replaces Send while a turn runs. A slash offers whatever commands
+the harness publishes, and the picker beside Send switches its own modes — plan,
+full access, whatever it has — which is ACP's answer to "how much may it do
+unattended" and a better one than any switch invented here.
+
+Answers are rendered as Markdown — headings, bullets, code spans, fenced blocks,
+tables — and everything the agent *did* rather than said folds into one
+**Worked for 4s** line per stretch, which opens when you want it. A tool call
+shows its own evidence: the diff it wrote, the terminal it ran in, the text it
+returned. Calls that can change the file carry a red dot.
+
+Reading is always on. **Edits** in the strip decides whether the canvas can be
+touched at all — off by default, and enforced by the daemon rather than the
+agent, so a harness run without permission prompts still cannot get past it.
+
+Who answers the harness when it *does* ask is a separate question, and it has no
+switch in the chrome on purpose. Where the harness publishes its own modes, the
+picker beside Send is the answer and it is the harness's own. Otherwise the
+daemon answers for you — on by default, each one written into the transcript
+with **Ask me instead** beside it — and when it is asking, the prompt itself
+carries **Allow these without asking for the rest of this session**. A control
+that only decides whether a prompt appears belongs on the prompt.
+
+The choice is remembered per user. Each approved edit is committed with
 `figma.commitUndo()`, so **one Cmd-Z takes back one change**. Ask for a
 checkpoint before a long run and you get a named entry in version history.
 
@@ -386,12 +419,32 @@ checkpoint before a long run and you get a named entry in version history.
 | `figma_extract` | the full extraction: HTML, `figmaCss`, TSX, CSS modules |
 | `figma_export_png` | the picture itself, as an image the model can look at |
 | `figma_resolve_url`, `figma_list_saved` | Figma links, and the curated set |
-| `figma_set_fill` | replace a node's fills with one solid colour |
-| `figma_set_stroke` | set or clear a stroke — borders are strokes, not fills |
-| `figma_set_text` | retype a TEXT layer, fonts loaded first |
-| `figma_set_auto_layout` | direction, spacing, padding, alignment |
-| `figma_create_frame` | a new frame, on the page or inside a parent |
+| `figma_list_library` | the components, styles and variables this file has |
+| **making things** | |
+| `figma_create_frame`, `figma_create_text` | the two most of a layout is built from |
+| `figma_create_rectangle`, `figma_create_ellipse` | dividers, bars, avatars, placeholders |
+| `figma_create_svg` | SVG markup into real editable vectors — this is how an icon gets drawn |
+| `figma_create_instance` | place a real component, not a lookalike |
+| `figma_clone_node` | a second row that matches the first exactly |
+| **moving them** | |
+| `figma_move_node` | reparent, or reorder among siblings |
+| `figma_delete_node` | take one away |
+| **changing them** | |
+| `figma_set_fill`, `figma_set_stroke` | colour, and borders — which are strokes, not fills |
+| `figma_set_text`, `figma_set_text_style` | the words, and the type they are set in |
+| `figma_set_bounds`, `figma_set_corner_radius` | position, size, rounding |
+| `figma_set_auto_layout`, `figma_set_layout_sizing` | the frame, and how its children hug or fill |
+| `figma_set_effects` | shadows and blurs |
+| `figma_set_visibility`, `figma_set_node_name` | opacity, hidden, locked, and what it is called |
+| **through the design system** | |
+| `figma_apply_style` | a paint, text or effect style, so it keeps following that style |
+| `figma_bind_variable` | a token, so the value follows the token |
 | `figma_save_version` | a named checkpoint in version history |
+
+The last two are the ones worth reaching for. Anything can be given a hex code;
+applying the style or binding the variable is what makes a change survive the
+next redesign, and an agent that has read `figma_list_library` knows which one
+to use.
 
 Nothing is truncated on the way through. Figma's own MCP server caps a response
 at 20 kB; `figma_extract` returns whatever the node is, which for a real screen

@@ -1232,172 +1232,432 @@ select:focus {
 }
 
 /* -------------------------------------------------------------------- agent */
+/*
+   The column has one job at a time — reading generated code, or talking about
+   the design — so the agent takes it whole, tab strip included.
 
-/* The agent takes the whole third column, tab strip included, rather than
-   sitting inside it. The point of the column is one job at a time: reading the
-   generated code, or talking about the design. Both at once would halve each. */
+   The palette is Figma's, deliberately: a plugin that invents its own colours
+   stops looking like part of the editor the moment the user switches theme. So
+   the design lives in hierarchy instead. Exactly one thing is set larger than
+   the panel's own 11px chrome — the agent's answer — and everything else
+   recedes from it: the question sits in a quiet bubble, and the machinery
+   (thinking, tool calls) collapses into a single line per turn.
+*/
+
 .agent-column {
   display: grid;
   grid-row: 1 / -1;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
-  gap: 6px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
   min-height: 0;
 }
 
+/* ------------------------------------------------------------------- strip */
+
 .agent-strip {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 28px;
+  gap: 5px;
+  min-height: 26px;
 }
 
 .agent-title {
   font-weight: 600;
 }
 
-.agent-strip .card-state {
+.agent-session {
   min-width: 0;
   overflow: hidden;
   color: var(--figma-color-text-secondary, #666);
-  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* The chat is itself a grid so the composer stays pinned to the bottom of the
-   column while only the transcript scrolls. */
+/* A switch that is on should look on at a glance, from across the panel; an
+   OS checkbox in a plugin reads as a form field, which these are not. */
+.toggle {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  cursor: pointer;
+}
+
+.toggle:hover:not(:disabled) {
+  border-color: var(--figma-color-border-selected, #0d99ff);
+}
+
+.toggle[aria-pressed='true'] {
+  border-color: var(--figma-color-border-selected, #0d99ff);
+  background: var(--figma-color-bg-selected, rgba(13, 153, 255, 0.15));
+  color: var(--figma-color-text, #000);
+  font-weight: 600;
+}
+
+/* Edits reach the canvas, so its "on" is a warning rather than a selection —
+   the same register a browser uses for a permission that is currently granted. */
+#agent-writes[aria-pressed='true']::before {
+  content: '●';
+  margin-right: 5px;
+  font-size: 7px;
+  vertical-align: 1px;
+}
+
+#agent-writes[aria-pressed='true'] {
+  border-color: var(--figma-color-border-danger-strong, #f24822);
+  background: var(--figma-color-bg-danger-tertiary, #ffd6d1);
+  color: var(--figma-color-text-danger, #b3261e);
+}
+
+.toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.button.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.button.ghost:hover {
+  border-color: var(--figma-color-border, #e6e6e6);
+  color: var(--figma-color-text, #000);
+}
+
+/* --------------------------------------------------------------- transcript */
+
 .agent-chat {
   display: grid;
-  grid-row: 2 / -1;
-  grid-template-rows: minmax(0, 1fr) auto auto auto auto;
-  gap: 6px;
+  grid-row: 2;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  gap: 8px;
   min-height: 0;
 }
 
-#agent-idle {
-  grid-row: 2 / -1;
-  align-self: start;
-}
-
-/* The transcript is the one thing on this page that is a conversation rather
-   than a form, so it scrolls inside itself. The page keeps its own scroll, and
-   a long answer never pushes the composer off the bottom of the window. */
+/* No frame around the conversation: the column is the frame. A border here
+   would put a box inside a box and steal eight pixels of reading width. */
 .agent-log {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   min-height: 0;
+  padding: 4px 2px 8px;
   overflow: auto;
-  padding: 10px;
-  border: 1px solid var(--figma-color-border, #e6e6e6);
-  border-radius: 8px;
-  background: var(--figma-color-bg, #fff);
+  scroll-behavior: smooth;
 }
 
-.agent-log:empty::after {
-  content: 'Nothing said yet.';
-  color: var(--figma-color-text-secondary, #666);
+@media (prefers-reduced-motion: reduce) {
+  .agent-log {
+    scroll-behavior: auto;
+  }
 }
 
-.agent-block {
-  margin: 0 0 10px;
-}
-
-.agent-block:last-child {
-  margin-bottom: 0;
-}
-
-.agent-who {
-  display: block;
-  margin-bottom: 2px;
-  color: var(--figma-color-text-secondary, #666);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-/* Model output is plain text that means its own line breaks. */
-.agent-text {
-  margin: 0;
+/* The question, in the corner it came from. Asymmetry says who is speaking, so
+   nothing has to be labelled "you" or "agent". */
+.turn-user {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 7px 11px;
+  border-radius: 14px 14px 3px 14px;
+  background: var(--figma-color-bg-secondary, #f5f5f5);
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.agent-block.user .agent-text {
-  padding: 6px 8px;
-  border-radius: 8px;
-  background: var(--figma-color-bg-secondary, #fafafa);
-}
-
-/* What travelled with the message, not what was said. */
-.agent-block.context .agent-text {
-  color: var(--figma-color-text-secondary, #666);
-  font-size: 10px;
-}
-
-/* Reasoning is context, not the answer, so it recedes rather than competing. */
-.agent-block.thought .agent-text {
-  color: var(--figma-color-text-secondary, #666);
-  font-style: italic;
-}
-
-.agent-block.notice .agent-text {
-  color: var(--figma-color-text-danger, #f24822);
-}
-
-/* An approval that happened without being asked for still has to be visible,
-   but it is a record rather than a problem. */
-.agent-block.notice.auto .agent-text,
-.agent-block.notice.info .agent-text {
-  color: var(--figma-color-text-secondary, #666);
-}
-
-.agent-block.notice.harness .agent-text {
-  color: var(--figma-color-text-secondary, #666);
-  font-family: SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-}
-
-.agent-tool {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 4px 8px;
-  border: 1px solid var(--figma-color-border, #e6e6e6);
-  border-radius: 6px;
-  background: var(--figma-color-bg-secondary, #fafafa);
-  font-family: SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-}
-
-.agent-tool .status {
-  color: var(--figma-color-text-secondary, #666);
-}
-
-.agent-tool.completed .status {
-  color: var(--figma-color-text-success, #14ae5c);
-}
-
-.agent-tool.failed .status {
-  color: var(--figma-color-text-danger, #f24822);
-}
-
-.agent-plan {
+/* The answer is the only thing in the panel set above the 11px chrome. */
+.turn-agent {
   margin: 0;
-  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.agent-plan li.completed {
-  color: var(--figma-color-text-secondary, #666);
-  text-decoration: line-through;
+.turn-agent + .turn-agent {
+  margin-top: -6px;
 }
 
-/* A permission prompt is the one thing here that must not be scrolled past, so
-   it sits between the transcript and the composer rather than inside either. */
-.agent-permission {
+/* ----------------------------------------------------------- activity spine */
+/*
+   The signature of this panel. Everything the agent did rather than said —
+   reasoning, tool calls — collapses into one line per stretch of work, with a
+   hairline under it. Expanded while it is happening, folded away once it is
+   done, because the answer is what the designer came for and the machinery is
+   only interesting when something went wrong.
+*/
+
+.activity {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 10px;
-  border: 1px solid var(--figma-color-border-selected, #0d99ff);
+}
+
+.activity-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0 0 6px;
+  border: none;
+  border-bottom: 1px solid var(--figma-color-border, #e6e6e6);
+  background: none;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.activity-summary:hover {
+  color: var(--figma-color-text, #000);
+}
+
+.activity-summary .chevron {
+  transition: transform 120ms ease;
+}
+
+.activity[data-open='true'] .activity-summary .chevron {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-summary .chevron {
+    transition: none;
+  }
+}
+
+/* Working: a slow pulse rather than a spinner, because the panel sits beside a
+   canvas somebody is trying to look at. */
+.activity[data-running='true'] .activity-summary {
+  animation: activity-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes activity-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity[data-running='true'] .activity-summary {
+    animation: none;
+  }
+}
+
+.activity-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 2px;
+}
+
+.activity-thought {
+  margin: 0;
+  color: var(--figma-color-text-secondary, #666);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* One row per tool call, updated in place. The name is the truth; the status is
+   the outcome; the dot only appears when the call could change the file. */
+.tool {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+}
+
+.tool .mark {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: transparent;
+  transform: translateY(-1px);
+}
+
+.tool.writes .mark {
+  background: var(--figma-color-icon-danger, #f24822);
+}
+
+.tool .name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--figma-color-text-secondary, #666);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool .state {
+  flex: none;
+  margin-left: auto;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.tool.completed .name {
+  color: var(--figma-color-text, #000);
+}
+
+.tool.completed .state {
+  color: var(--figma-color-text-success, #14ae5c);
+}
+
+.tool.failed .name,
+.tool.failed .state {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+/* A line that is neither question nor answer: a harness on stderr, an automatic
+   approval, something that broke. */
+.event {
+  display: flex;
+  gap: 6px;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.event.error {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+.event .rule {
+  flex: none;
+  width: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.4;
+}
+
+.event .text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.event.harness .text {
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+}
+
+/* -------------------------------------------------------------- empty state */
+
+.agent-empty,
+.agent-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 0;
+  padding: 24px 8px;
+  text-align: center;
+}
+
+.agent-welcome {
+  margin: auto 0;
+}
+
+/* Four corner handles round a rectangle: what a selection looks like on the
+   canvas, which is the one thing this panel is for talking about. */
+.welcome-mark {
+  color: var(--figma-color-icon-tertiary, #b3b3b3);
+}
+
+.welcome-title {
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.welcome-lead {
+  margin: 0;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.welcome-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  max-width: 380px;
+  margin-top: 6px;
+}
+
+.welcome-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
   border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.welcome-card:hover:not(:disabled) {
+  border-color: var(--figma-color-border-selected, #0d99ff);
+  background: var(--figma-color-bg-secondary, #fafafa);
+}
+
+.welcome-card:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.welcome-card .glyph {
+  color: var(--figma-color-icon-brand, #0d99ff);
+}
+
+.welcome-card.writes .glyph {
+  color: var(--figma-color-icon-danger, #f24822);
+}
+
+.welcome-card .label {
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.welcome-card .needs {
+  color: var(--figma-color-text-danger, #f24822);
+  font-size: 10px;
+}
+
+.welcome-title + .welcome-lead {
+  margin-top: -4px;
+}
+
+@media (max-width: 420px) {
+  .welcome-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* -------------------------------------------------------------- permission */
+
+/* Between the transcript and the composer, so it cannot be scrolled past: the
+   turn is stopped until it is answered. */
+.agent-permission {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--figma-color-border-selected, #0d99ff);
+  border-radius: 10px;
   background: var(--figma-color-bg-selected, rgba(13, 153, 255, 0.15));
 }
 
@@ -1412,39 +1672,670 @@ select:focus {
   gap: 6px;
 }
 
-/* Sits directly on the composer, because it is part of what pressing Send
-   sends — not a setting somewhere else that happens to affect it. */
-.agent-context {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+/* The "stop asking" choice belongs on the thing that is asking, not in the
+   header where it would be a switch with nothing to point at. */
+.link-button {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
   color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
   cursor: pointer;
 }
 
-.agent-context span {
+.link-button:hover {
+  color: var(--figma-color-text, #000);
+}
+
+/* And the way back, on the line that says it happened. */
+.event .undo {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- composer */
+/*
+   One surface, not three rows. The chips are part of what Send sends, so they
+   live inside the thing that sends them rather than floating above it.
+*/
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 8px 7px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 12px;
+  background: var(--figma-color-bg-secondary, #fafafa);
+  transition: border-color 120ms ease;
+}
+
+.composer:focus-within {
+  border-color: var(--figma-color-border-selected, #0d99ff);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer {
+    transition: none;
+  }
+}
+
+/* Grows with what is typed, up to a point, then scrolls. */
+.composer-input {
+  min-height: 20px;
+  max-height: 140px;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: 12px/1.5 Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+  resize: none;
+  overflow-y: auto;
+}
+
+.composer-input:focus {
+  outline: none;
+}
+
+.composer-input::placeholder {
+  color: var(--figma-color-text-tertiary, #b3b3b3);
+}
+
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.composer-note {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--figma-color-text-secondary, #666);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: 13px/1 inherit;
+  cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--figma-color-bg-hover, rgba(0, 0, 0, 0.06));
+  color: var(--figma-color-text, #000);
+}
+
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--figma-color-bg-brand, #0d99ff);
+  color: var(--figma-color-text-onbrand, #fff);
+  font: 12px/1 inherit;
+  cursor: pointer;
+}
+
+.send:disabled {
+  background: var(--figma-color-bg-disabled, #e6e6e6);
+  color: var(--figma-color-text-disabled, #b3b3b3);
+  cursor: default;
+}
+
+#agent-cancel {
+  background: var(--figma-color-bg-danger, #f24822);
+  font-size: 8px;
+}
+
+/* --------------------------------------------------------- context chips */
+
+.context-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 150px;
+  padding: 1px 3px 1px 7px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 999px;
+  background: var(--figma-color-bg, #fff);
+  color: inherit;
+}
+
+.context-chip .name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-context input:checked + span {
-  color: var(--figma-color-text, #000);
+/* Following the canvas rather than pinned by hand: this one is replaced the
+   next time the selection changes, and that is worth showing rather than
+   letting the designer discover it. */
+.context-chip.live {
+  border-style: dashed;
 }
 
-.agent-composer {
+.context-chip .drop {
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.context-chip .drop:hover {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+/* ------------------------------------------------------------- markdown */
+/*
+   An agent answers in Markdown. Rendering it as plain text turns a readable
+   answer into a wall of asterisks, so the small subset that actually turns up —
+   headings, bullets, code spans, fenced blocks, the occasional table — is set
+   properly and nothing else is invented.
+*/
+
+.turn-agent > :first-child {
+  margin-top: 0;
+}
+
+.turn-agent > :last-child {
+  margin-bottom: 0;
+}
+
+.md-p {
+  margin: 8px 0;
+}
+
+.md-heading {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.md-list {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+
+.md-list li {
+  margin: 3px 0;
+}
+
+.turn-agent code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--figma-color-bg-secondary, #f0f0f0);
+  font: 10.5px/1.5 SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.md-code {
+  margin: 8px 0;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 8px;
+  background: var(--figma-color-bg-secondary, #fafafa);
+}
+
+.md-code code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+}
+
+.md-quote {
+  margin: 8px 0;
+  padding-left: 9px;
+  border-left: 2px solid var(--figma-color-border, #e6e6e6);
+  color: var(--figma-color-text-secondary, #666);
+}
+
+/* Wide tables scroll inside themselves rather than widening the column. */
+.md-table-wrap {
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.md-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.md-table th,
+.md-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--figma-color-border, #e6e6e6);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table th {
+  color: var(--figma-color-text-secondary, #666);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.turn-agent hr {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px solid var(--figma-color-border, #e6e6e6);
+}
+
+.turn-agent a {
+  color: var(--figma-color-text-brand, #0d99ff);
+}
+
+/* ------------------------------------------------------------ attachments */
+
+.preview-actions {
   display: flex;
-  align-items: flex-end;
   gap: 6px;
 }
 
-.agent-input {
+.preview-actions .button {
   flex: 1;
+}
+
+.context-chip.file {
+  border-style: solid;
+  background: var(--figma-color-bg-secondary, #fafafa);
+}
+
+.context-chip .kind {
+  flex: none;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+/* A message typed while the agent is still answering waits its turn, and looks
+   like it is waiting rather than like it was lost. */
+.turn-user.queued {
+  opacity: 0.55;
+}
+
+.turn-user .queued-tag {
+  display: block;
+  margin-top: 3px;
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 10px;
+}
+
+/* ------------------------------------------------------- tool call content */
+/*
+   A tool call carries its own evidence — the text it returned, the diff it
+   wrote, the terminal it ran in. ACP models all three, and showing them is the
+   difference between "it says it ran something" and being able to check.
+*/
+
+.tool-content {
+  margin-top: 6px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 8px;
+  background: var(--figma-color-bg-secondary, #fafafa);
+  overflow: hidden;
+}
+
+.tool-content .head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--figma-color-border, #e6e6e6);
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.tool-content pre {
+  margin: 0;
+  padding: 8px 9px;
+  max-height: 220px;
+  overflow: auto;
+  font: 10.5px/1.55 SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-content .foot {
+  padding: 4px 9px 6px;
+  color: var(--figma-color-text-secondary, #666);
+  text-align: right;
+}
+
+.tool-content .foot.ok {
+  color: var(--figma-color-text-success, #14ae5c);
+}
+
+.tool-content .foot.bad {
+  color: var(--figma-color-text-danger, #f24822);
+}
+
+.tool-content img {
+  display: block;
+  max-width: 100%;
+}
+
+/* A diff is read by colour before it is read as text, so the lines carry it. */
+.diff-line {
+  display: block;
+  padding: 0 9px;
+}
+
+.diff-line.add {
+  background: var(--figma-color-bg-success-tertiary, #cff7d3);
+  color: var(--figma-color-text-success, #0d6a35);
+}
+
+.diff-line.del {
+  background: var(--figma-color-bg-danger-tertiary, #ffd6d1);
+  color: var(--figma-color-text-danger, #b3261e);
+}
+
+/* --------------------------------------------------------------- the plan */
+
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 8px;
+}
+
+.plan-head {
+  color: var(--figma-color-text-secondary, #666);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.plan-item {
+  display: flex;
+  gap: 7px;
+}
+
+.plan-item .box {
+  flex: none;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.plan-item.completed {
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.plan-item.completed .label {
+  text-decoration: line-through;
+}
+
+.plan-item.in_progress .box {
+  color: var(--figma-color-icon-brand, #0d99ff);
+}
+
+/* ---------------------------------------------------------- mode and slash */
+
+/* The harness's own idea of how much it may do unattended. Sat next to Send
+   because it is the thing that changes what pressing Send will let happen.
+   A button rather than a select: mode names run long — "Bypass Permissions" —
+   and a native select clips them mid-word with no way to say so. */
+.mode-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 1 auto;
   min-width: 0;
-  resize: vertical;
+  max-width: 150px;
+  padding: 2px 5px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--figma-color-text-secondary, #666);
   font: inherit;
-  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mode-picker:hover {
+  background: var(--figma-color-bg-hover, rgba(0, 0, 0, 0.06));
+  color: var(--figma-color-text, #000);
+}
+
+/* The label truncates; the chevron never does. A text arrowhead glyph sits on
+   its own baseline and rides low next to 11px type, so it is drawn instead. */
+.mode-picker .label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-picker .chevron {
+  flex: none;
+}
+
+.mode-menu {
+  right: 34px;
+  left: auto;
+  min-width: 220px;
+}
+
+.mode-menu .command.current {
+  font-weight: 600;
+}
+
+/* Chips get their own line: they are a list that grows, and a row that has to
+   hold both them and the send controls turns into a fight neither wins. */
+.composer-context {
+  display: flex;
+  min-width: 0;
+}
+
+.composer {
+  position: relative;
+}
+
+/* Commands the harness publishes, offered when the message starts with a slash
+   rather than hidden in a menu nobody opens. */
+.command-menu {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: calc(100% + 6px);
+  z-index: 5;
+  max-height: 200px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--figma-color-border, #e6e6e6);
+  border-radius: 10px;
+  background: var(--figma-color-bg, #fff);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+/* Anchored under the control that opened it rather than above the composer. */
+.more-menu {
+  right: 0;
+  left: auto;
+  top: calc(100% + 6px);
+  bottom: auto;
+  min-width: 210px;
+}
+
+/* Wide enough to read a path in, anchored under the label that shows one. */
+.folder-menu {
+  left: 0;
+  right: auto;
+  top: calc(100% + 6px);
+  bottom: auto;
+  width: min(320px, calc(100vw - 24px));
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 4px;
+  border-bottom: 1px solid var(--figma-color-border, #e6e6e6);
+}
+
+.folder-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--figma-color-text-secondary, #666);
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 7px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-row:hover {
+  background: var(--figma-color-bg-selected, rgba(13, 153, 255, 0.15));
+}
+
+.folder-row .mark {
+  flex: none;
+  color: var(--figma-color-text-secondary, #666);
+}
+
+.folder-row.project .mark {
+  color: var(--figma-color-icon-brand, #0d99ff);
+}
+
+.folder-pick {
+  margin-top: 2px;
+}
+
+/* Clickable, but it is a label first: no button chrome until it is hovered. */
+button.agent-session {
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.agent-session:hover {
+  border-color: var(--figma-color-border, #e6e6e6);
+  color: var(--figma-color-text, #000);
+}
+
+/* Anchored to the + rather than stretched across the composer. */
+.attach-menu {
+  right: auto;
+  min-width: 210px;
+}
+
+.command {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 7px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.command:hover,
+.command.active {
+  background: var(--figma-color-bg-selected, rgba(13, 153, 255, 0.15));
+}
+
+.command .name {
+  flex: none;
+}
+
+/* Monospace belongs to the thing that is typed, not to a menu label. */
+#agent-commands .command .name {
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.more-menu .command .name,
+.attach-menu .command .name {
+  font-weight: 600;
+}
+
+.command .about {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--figma-color-text-secondary, #666);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The picture that went with a question, shown at the size it matters: enough
+   to recognise the frame, not enough to take over the transcript. */
+.turn-user .shot {
+  display: block;
+  max-width: 100%;
+  max-height: 160px;
+  margin-top: 6px;
+  border-radius: 8px;
 }
 
 /* Narrower windows fold the columns rather than squeezing all three. */

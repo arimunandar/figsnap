@@ -164,6 +164,28 @@ export const TOOLS = [
     params: (args) => (args.folder === undefined ? {} : { folder: args.folder }),
   },
 
+  {
+    name: 'figma_list_library',
+    title: 'The design system in this file',
+    description:
+      'The components, styles and variables this file has, with the ids the other tools need. Read this before "make it match our button" or "use our brand colour" — instantiating the real component or binding the real variable is what makes a change survive contact with the design system, rather than a hex code that looks right today.',
+    mutates: false,
+    command: 'list_library',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        only: {
+          type: 'string',
+          enum: ['components', 'styles', 'variables', 'all'],
+          description: 'Narrow the answer. Default all three.',
+        },
+      },
+      additionalProperties: false,
+    },
+    params: (args) => (args.only === undefined ? {} : { only: args.only }),
+  },
+
+
   // ------------------------------------------------------------------ writes
 
   {
@@ -302,6 +324,391 @@ export const TOOLS = [
       ...args,
       ...(args.fill === undefined ? {} : { fill: parseColor(args.fill) }),
     }),
+  },
+  {
+    name: 'figma_create_text',
+    title: 'Add a text layer',
+    description:
+      'Creates a TEXT layer with the words you give it. The font is loaded before anything is typed, and a font this machine does not have is refused rather than substituted. Give a width to make it wrap; without one it hugs its text.',
+    mutates: true,
+    command: 'create_text',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The characters.' },
+        parentId: { type: 'string', description: 'Put it inside this node. Default: the current page.' },
+        name: { type: 'string', description: 'Layer name. Defaults to the text itself.' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number', minimum: 1, description: 'Fixed width, so the text wraps.' },
+        fontFamily: { type: 'string', description: 'Default Inter.' },
+        fontStyle: { type: 'string', description: 'Weight or style, like "Bold". Default Regular.' },
+        fontSize: { type: 'number', minimum: 1 },
+        color: { type: 'string', description: 'Hex colour for the text.' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    params: (args) => ({ ...args, ...(args.color === undefined ? {} : { color: parseColor(args.color) }) }),
+  },
+
+  {
+    name: 'figma_create_rectangle',
+    title: 'Add a rectangle',
+    description:
+      'Creates a rectangle. The workhorse shape: dividers, bars, backgrounds, placeholders. Omit the fill for an empty one.',
+    mutates: true,
+    command: 'create_rectangle',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        parentId: { type: 'string', description: 'Put it inside this node. Default: the current page.' },
+        name: { type: 'string' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number', minimum: 0.01, description: 'Default 100.' },
+        height: { type: 'number', minimum: 0.01, description: 'Default 100.' },
+        cornerRadius: { type: 'number', minimum: 0 },
+        fill: { type: 'string', description: 'Hex colour. Omit for no fill.' },
+      },
+      additionalProperties: false,
+    },
+    params: (args) => ({ ...args, ...(args.fill === undefined ? {} : { fill: parseColor(args.fill) }) }),
+  },
+
+  {
+    name: 'figma_create_ellipse',
+    title: 'Add an ellipse',
+    description: 'Creates an ellipse. Equal width and height give a circle — an avatar, a dot, a radio button.',
+    mutates: true,
+    command: 'create_ellipse',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        parentId: { type: 'string' },
+        name: { type: 'string' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number', minimum: 0.01, description: 'Default 100.' },
+        height: { type: 'number', minimum: 0.01, description: 'Default 100.' },
+        fill: { type: 'string', description: 'Hex colour. Omit for no fill.' },
+      },
+      additionalProperties: false,
+    },
+    params: (args) => ({ ...args, ...(args.fill === undefined ? {} : { fill: parseColor(args.fill) }) }),
+  },
+
+  {
+    name: 'figma_create_svg',
+    title: 'Draw with SVG',
+    description:
+      'Turns SVG markup into real Figma vectors — not an image, but editable paths in a frame. This is how to add an icon, a logo or any shape the other create tools cannot express. Extraction returns icons as SVG too, so a shape can be read out of one place and drawn into another unchanged.',
+    mutates: true,
+    command: 'create_svg',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        svg: { type: 'string', description: 'The <svg> markup.' },
+        parentId: { type: 'string' },
+        name: { type: 'string' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number', minimum: 0.01, description: 'Scale it to this width.' },
+        height: { type: 'number', minimum: 0.01 },
+      },
+      required: ['svg'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_create_instance',
+    title: 'Place a component',
+    description:
+      'Creates an instance of a component in this file. Get the id from figma_list_library. Naming a variant set places its default variant. Prefer this over drawing a lookalike: an instance keeps its link to the component and updates with it.',
+    mutates: true,
+    command: 'create_instance',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        componentId: { type: 'string', description: 'From figma_list_library.' },
+        parentId: { type: 'string' },
+        name: { type: 'string' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+      },
+      required: ['componentId'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_clone_node',
+    title: 'Duplicate a layer',
+    description:
+      'Copies a node, with everything inside it, into the same parent or one you name. The cheapest way to make a second row, card or list item that matches the first exactly.',
+    mutates: true,
+    command: 'clone_node',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: { ...nodeIdArgument, description: 'The node to copy.' },
+        parentId: { type: 'string', description: 'Where the copy goes. Default: beside the original.' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+      },
+      required: ['nodeId'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_move_node',
+    title: 'Reparent or reorder a layer',
+    description:
+      'Moves a node into another parent, or to a different position among its siblings. Index 0 is the back of the canvas and the top of a layer list; leaving it out puts the node last.',
+    mutates: true,
+    command: 'move_node',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: { ...nodeIdArgument, description: 'The node to move.' },
+        parentId: { type: 'string', description: 'New parent. Default: keep the one it has.' },
+        index: { type: 'integer', minimum: 0, description: 'Position among siblings.' },
+      },
+      required: ['nodeId'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_delete_node',
+    title: 'Delete a layer',
+    description:
+      'Removes a node and everything inside it. One undo step, so the designer can take it back with a single Cmd-Z — but say what you are deleting before you do it.',
+    mutates: true,
+    command: 'delete_node',
+    inputSchema: {
+      type: 'object',
+      properties: { nodeId: { ...nodeIdArgument, description: 'The node to delete.' } },
+      required: ['nodeId'],
+      additionalProperties: false,
+    },
+    params: (args) => ({ nodeId: args.nodeId }),
+  },
+
+  {
+    name: 'figma_set_bounds',
+    title: 'Move or resize',
+    description:
+      'Sets position and size. Position is ignored inside an auto-layout frame, where the parent decides it — use figma_set_layout_sizing and the parent’s spacing there instead.',
+    mutates: true,
+    command: 'set_bounds',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number', minimum: 0.01 },
+        height: { type: 'number', minimum: 0.01 },
+      },
+      required: ['nodeId'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_set_corner_radius',
+    title: 'Round the corners',
+    description: 'Sets one radius for every corner, or each corner on its own.',
+    mutates: true,
+    command: 'set_corner_radius',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        radius: { type: 'number', minimum: 0, description: 'All four corners.' },
+        topLeftRadius: { type: 'number', minimum: 0 },
+        topRightRadius: { type: 'number', minimum: 0 },
+        bottomRightRadius: { type: 'number', minimum: 0 },
+        bottomLeftRadius: { type: 'number', minimum: 0 },
+      },
+      required: ['nodeId'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_set_node_name',
+    title: 'Rename a layer',
+    description:
+      'Renames a layer. Layer names are what the generated code turns into class names, so tidying them is a real change and not cosmetic.',
+    mutates: true,
+    command: 'set_node_name',
+    inputSchema: {
+      type: 'object',
+      properties: { nodeId: nodeIdArgument, name: { type: 'string' } },
+      required: ['nodeId', 'name'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_set_visibility',
+    title: 'Hide, lock or fade a layer',
+    description: 'Sets opacity, visibility and lock. Hidden layers are skipped by extraction, which is often the point.',
+    mutates: true,
+    command: 'set_visibility',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        opacity: { type: 'number', minimum: 0, maximum: 1 },
+        visible: { type: 'boolean' },
+        locked: { type: 'boolean' },
+      },
+      required: ['nodeId'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_set_effects',
+    title: 'Set shadows and blurs',
+    description:
+      'Replaces a node’s effects with the list you give. An empty list clears them. Elevation in most design systems is a drop shadow, so this is what "make it look raised" means.',
+    mutates: true,
+    command: 'set_effects',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        effects: {
+          type: 'array',
+          description: 'In back-to-front order. Empty clears every effect.',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['DROP_SHADOW', 'INNER_SHADOW', 'LAYER_BLUR', 'BACKGROUND_BLUR'] },
+              color: { type: 'string', description: 'Hex colour of the shadow. Default black.' },
+              alpha: { type: 'number', minimum: 0, maximum: 1, description: 'Shadow opacity. Default 0.25.' },
+              offsetX: { type: 'number', description: 'Default 0.' },
+              offsetY: { type: 'number', description: 'Default 2.' },
+              radius: { type: 'number', minimum: 0, description: 'Blur radius. Default 4.' },
+              spread: { type: 'number', description: 'Default 0.' },
+            },
+            required: ['type'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['nodeId', 'effects'],
+      additionalProperties: false,
+    },
+    params: (args) => ({
+      nodeId: args.nodeId,
+      effects: (args.effects ?? []).map((effect) => ({
+        ...effect,
+        ...(effect.color === undefined ? {} : { color: parseColor(effect.color) }),
+      })),
+    }),
+  },
+
+  {
+    name: 'figma_set_text_style',
+    title: 'Set type on a text layer',
+    description:
+      'Font, size, line height, letter spacing, alignment and colour, on a TEXT layer. Only what you name is changed. Prefer figma_apply_style where the file has a text style for it — a named style survives a redesign and a hard-coded 14px does not.',
+    mutates: true,
+    command: 'set_text_style',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        fontFamily: { type: 'string' },
+        fontStyle: { type: 'string', description: 'Weight or style, like "Semi Bold".' },
+        fontSize: { type: 'number', minimum: 1 },
+        lineHeight: { type: 'number', minimum: 0, description: 'In pixels.' },
+        letterSpacing: { type: 'number', description: 'In pixels.' },
+        align: { type: 'string', enum: ['LEFT', 'CENTER', 'RIGHT', 'JUSTIFIED'] },
+        autoResize: { type: 'string', enum: ['NONE', 'WIDTH_AND_HEIGHT', 'HEIGHT', 'TRUNCATE'] },
+        color: { type: 'string', description: 'Hex colour.' },
+      },
+      required: ['nodeId'],
+      additionalProperties: false,
+    },
+    params: (args) => ({ ...args, ...(args.color === undefined ? {} : { color: parseColor(args.color) }) }),
+  },
+
+  {
+    name: 'figma_set_layout_sizing',
+    title: 'Hug, fill or fix a size',
+    description:
+      'How a child behaves inside an auto-layout frame: HUG shrinks to its contents, FILL stretches to the parent, FIXED keeps its size. This, not figma_set_bounds, is how widths are set inside auto layout.',
+    mutates: true,
+    command: 'set_layout_sizing',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        horizontal: { type: 'string', enum: ['FIXED', 'HUG', 'FILL'] },
+        vertical: { type: 'string', enum: ['FIXED', 'HUG', 'FILL'] },
+      },
+      required: ['nodeId'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_apply_style',
+    title: 'Apply a shared style',
+    description:
+      'Applies a paint, text or effect style from this file by id, from figma_list_library. The right way to make something "match": the layer follows the style afterwards, where a copied hex code does not.',
+    mutates: true,
+    command: 'apply_style',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        styleId: { type: 'string', description: 'From figma_list_library.' },
+      },
+      required: ['nodeId', 'styleId'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
+  },
+
+  {
+    name: 'figma_bind_variable',
+    title: 'Bind a variable',
+    description:
+      'Binds a variable from this file to a property, so the value follows the token rather than being a copy of it. Use "fill" or "stroke" for a colour variable; for a number use the property name, like cornerRadius, itemSpacing, paddingLeft, width or opacity.',
+    mutates: true,
+    command: 'bind_variable',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: nodeIdArgument,
+        variableId: { type: 'string', description: 'From figma_list_library.' },
+        field: {
+          type: 'string',
+          description: '"fill", "stroke", or a numeric property such as cornerRadius or itemSpacing.',
+        },
+      },
+      required: ['nodeId', 'variableId', 'field'],
+      additionalProperties: false,
+    },
+    params: (args) => args,
   },
   {
     name: 'figma_save_version',

@@ -21,6 +21,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 let mcpServers = []
 let mcp = null
 let cancelled = false
+let mode = 'ask'
 
 function write(message) {
   process.stdout.write(JSON.stringify(message) + '\n')
@@ -98,6 +99,46 @@ async function runPrompt(sessionId, prompt) {
 
   text(sessionId, 'agent_thought_chunk', 'thinking about ')
   text(sessionId, 'agent_thought_chunk', 'the request')
+
+  if (said.includes('picture')) {
+    const image = prompt.find((block) => block.type === 'image')
+    text(sessionId, 'agent_message_chunk', image === undefined ? 'no picture' : `picture ${image.mimeType}`)
+  }
+
+  if (said.includes('evidence')) {
+    // A tool call carries what it did, not only that it did it.
+    update(sessionId, {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'ev',
+      title: 'Write src/app.css',
+      kind: 'edit',
+      status: 'in_progress',
+    })
+    update(sessionId, {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'ev',
+      status: 'completed',
+      content: [{ type: 'diff', path: 'src/app.css', oldText: '.a { color: red }', newText: '.a { color: blue }' }],
+    })
+    text(sessionId, 'agent_message_chunk', 'wrote the diff')
+  }
+
+  if (said.includes('shell')) {
+    const created = await ask('terminal/create', { sessionId, command: 'echo', args: ['from the terminal'] })
+    await ask('terminal/wait_for_exit', { sessionId, terminalId: created.terminalId })
+    update(sessionId, {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'sh',
+      title: 'Ran echo',
+      status: 'completed',
+      content: [{ type: 'terminal', terminalId: created.terminalId }],
+    })
+    text(sessionId, 'agent_message_chunk', 'ran it')
+  }
+
+  if (said.includes('mode')) {
+    text(sessionId, 'agent_message_chunk', `mode is ${mode}`)
+  }
 
   if (said.includes('tools')) {
     const client = await mcpClient()
@@ -194,14 +235,49 @@ rl.on('line', async (line) => {
       case 'initialize':
         reply({
           protocolVersion: message.params.protocolVersion,
-          agentCapabilities: { loadSession: true, promptCapabilities: {} },
+          agentCapabilities: {
+            loadSession: true,
+            // A design tool has a picture to send; a harness that says it reads
+            // images is the only one that should be sent one.
+            promptCapabilities: { image: true },
+          },
           agentInfo: { name: 'fake-acp', version: '1.0.0' },
         })
         break
 
       case 'session/new':
         mcpServers = message.params.mcpServers ?? []
-        reply({ sessionId: 'fake-session-1' })
+        reply({
+          sessionId: 'fake-session-1',
+          modes: {
+            currentModeId: 'ask',
+            availableModes: [
+              { id: 'ask', name: 'Ask first', description: 'Stop before anything that writes.' },
+              { id: 'go', name: 'Full access', description: 'Do not ask.' },
+            ],
+          },
+        })
+        // Commands are published rather than requested, so they arrive as an
+        // update the moment the session exists.
+        notify('session/update', {
+          sessionId: 'fake-session-1',
+          update: {
+            sessionUpdate: 'available_commands_update',
+            availableCommands: [
+              { name: 'review', description: 'Review the current diff' },
+              { name: 'test', description: 'Run the test suite' },
+            ],
+          },
+        })
+        break
+
+      case 'session/set_mode':
+        mode = message.params.modeId
+        reply({})
+        notify('session/update', {
+          sessionId: message.params.sessionId,
+          update: { sessionUpdate: 'current_mode_update', currentModeId: mode },
+        })
         break
 
       case 'session/load':

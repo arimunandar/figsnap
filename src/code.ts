@@ -1996,6 +1996,414 @@ async function saveVersion(params: Record<string, unknown>): Promise<unknown> {
   return { id: result?.id ?? null, title }
 }
 
+// ------------------------------------------------------------ making things
+//
+// The first writes could only change what was already there. These make it.
+//
+// One rule runs through them: a create returns the new node's id, because the
+// call after it almost always needs one. An agent building a card does
+// create_frame, create_text, create_rectangle, move_node — and every step needs
+// the answer to the step before.
+
+/** Where a new node goes. The current page unless a parent is named. */
+async function resolveParent(id: unknown): Promise<BaseNode & ChildrenMixin> {
+  if (id === undefined || id === null || id === '') return figma.currentPage
+  const node = await resolveFor(id, (candidate) => 'appendChild' in candidate, 'it cannot hold children')
+  return node as unknown as BaseNode & ChildrenMixin
+}
+
+/** Name it, put it where it was asked for, and report it back. */
+async function place(node: SceneNode, params: Record<string, unknown>): Promise<unknown> {
+  if (typeof params.name === 'string' && params.name !== '') node.name = params.name
+  const parent = await resolveParent(params.parentId)
+  parent.appendChild(node)
+  // Position after appending: a child of an auto-layout frame has its position
+  // decided for it, and setting x/y first would be silently thrown away.
+  if (params.x !== undefined) node.x = readNumber(params.x, 'x')
+  if (params.y !== undefined) node.y = readNumber(params.y, 'y')
+  afterMutation(true)
+  return { ...toRow(node), parentId: parent.id }
+}
+
+/** The font a new or restyled text node should use, loaded and ready. */
+async function readFont(params: Record<string, unknown>, fallback: FontName): Promise<FontName> {
+  const font: FontName = {
+    family: typeof params.fontFamily === 'string' && params.fontFamily !== '' ? params.fontFamily : fallback.family,
+    style: typeof params.fontStyle === 'string' && params.fontStyle !== '' ? params.fontStyle : fallback.style,
+  }
+  try {
+    await figma.loadFontAsync(font)
+    return font
+  } catch {
+    throw new Error(
+      `This machine has no "${font.family} ${font.style}". Use a font that is installed, or leave the font alone.`,
+    )
+  }
+}
+
+async function createText(params: Record<string, unknown>): Promise<unknown> {
+  const node = figma.createText()
+  node.fontName = await readFont(params, { family: 'Inter', style: 'Regular' })
+  node.characters = String(params.text ?? '')
+  if (params.fontSize !== undefined) node.fontSize = readNumber(params.fontSize, 'fontSize')
+  if (params.color !== undefined) node.fills = [{ type: 'SOLID', color: readColor(params.color) }]
+  if (params.width !== undefined) {
+    // A fixed width is the only way to get wrapping; the default hugs its text.
+    node.textAutoResize = 'HEIGHT'
+    node.resize(Math.max(1, readNumber(params.width, 'width')), node.height)
+  }
+  if (typeof params.name !== 'string' || params.name === '') node.name = node.characters.slice(0, 40) || 'Text'
+  return place(node, params)
+}
+
+async function createRectangle(params: Record<string, unknown>): Promise<unknown> {
+  const node = figma.createRectangle()
+  node.resize(
+    params.width === undefined ? 100 : Math.max(0.01, readNumber(params.width, 'width')),
+    params.height === undefined ? 100 : Math.max(0.01, readNumber(params.height, 'height')),
+  )
+  if (params.cornerRadius !== undefined) node.cornerRadius = readNumber(params.cornerRadius, 'cornerRadius')
+  node.fills = params.fill === undefined ? [] : [{ type: 'SOLID', color: readColor(params.fill) }]
+  return place(node, params)
+}
+
+async function createEllipse(params: Record<string, unknown>): Promise<unknown> {
+  const node = figma.createEllipse()
+  node.resize(
+    params.width === undefined ? 100 : Math.max(0.01, readNumber(params.width, 'width')),
+    params.height === undefined ? 100 : Math.max(0.01, readNumber(params.height, 'height')),
+  )
+  node.fills = params.fill === undefined ? [] : [{ type: 'SOLID', color: readColor(params.fill) }]
+  return place(node, params)
+}
+
+async function createSvg(params: Record<string, unknown>): Promise<unknown> {
+  const svg = String(params.svg ?? '').trim()
+  if (svg === '') throw new Error('Pass the SVG markup')
+  let node: FrameNode
+  try {
+    node = figma.createNodeFromSvg(svg)
+  } catch (error) {
+    throw new Error(`Figma could not read that SVG: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (params.width !== undefined || params.height !== undefined) {
+    node.resize(
+      params.width === undefined ? node.width : Math.max(0.01, readNumber(params.width, 'width')),
+      params.height === undefined ? node.height : Math.max(0.01, readNumber(params.height, 'height')),
+    )
+  }
+  return place(node, params)
+}
+
+async function createInstance(params: Record<string, unknown>): Promise<unknown> {
+  const source = await figma.getNodeByIdAsync(String(params.componentId ?? ''))
+  if (source === null || source.removed) throw new Error(`No component with id ${String(params.componentId)}`)
+  // A variant set cannot be instantiated; its default variant can, and that is
+  // what a caller naming the set almost certainly meant.
+  const component =
+    source.type === 'COMPONENT_SET' ? (source.defaultVariant as ComponentNode | null) : (source as ComponentNode)
+  if (component === null || component.type !== 'COMPONENT') {
+    throw new Error(`${(source as SceneNode).name} is a ${source.type}, not a component`)
+  }
+  return place(component.createInstance(), params)
+}
+
+// ---------------------------------------------------------- moving them about
+
+async function cloneNode(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveScene(params.nodeId)
+  const copy = node.clone()
+  const parent = params.parentId === undefined ? node.parent : await resolveParent(params.parentId)
+  if (parent === null) throw new Error('That node has no parent to copy into')
+  ;(parent as ChildrenMixin).appendChild(copy)
+  if (params.x !== undefined) copy.x = readNumber(params.x, 'x')
+  if (params.y !== undefined) copy.y = readNumber(params.y, 'y')
+  afterMutation(true)
+  return { ...toRow(copy), parentId: parent.id }
+}
+
+async function moveNode(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveScene(params.nodeId)
+  const parent = params.parentId === undefined ? node.parent : await resolveParent(params.parentId)
+  if (parent === null) throw new Error('That node has no parent')
+  const children = (parent as ChildrenMixin).children
+  const index = params.index === undefined ? children.length : Math.max(0, readNumber(params.index, 'index'))
+  ;(parent as ChildrenMixin).insertChild(Math.min(index, children.length), node)
+  afterMutation(true)
+  return { ...toRow(node), parentId: parent.id, index: (parent as ChildrenMixin).children.indexOf(node) }
+}
+
+async function deleteNode(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveScene(params.nodeId)
+  const gone = { id: node.id, name: node.name, type: node.type }
+  node.remove()
+  afterMutation(true)
+  return gone
+}
+
+// -------------------------------------------------------------- appearance
+
+async function setBounds(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveScene(params.nodeId)
+  if (params.x !== undefined) node.x = readNumber(params.x, 'x')
+  if (params.y !== undefined) node.y = readNumber(params.y, 'y')
+  if (params.width !== undefined || params.height !== undefined) {
+    // A handful of node types have a size but no way to set it.
+    if (!('resize' in node)) throw new Error(`A ${node.type} cannot be resized`)
+    node.resize(
+      params.width === undefined ? node.width : Math.max(0.01, readNumber(params.width, 'width')),
+      params.height === undefined ? node.height : Math.max(0.01, readNumber(params.height, 'height')),
+    )
+  }
+  afterMutation()
+  return toRow(node)
+}
+
+const CORNERS = ['topLeftRadius', 'topRightRadius', 'bottomRightRadius', 'bottomLeftRadius'] as const
+
+async function setCornerRadius(params: Record<string, unknown>): Promise<unknown> {
+  const node = (await resolveFor(
+    params.nodeId,
+    (candidate) => 'cornerRadius' in candidate,
+    'it has no corners to round',
+  )) as SceneNode & CornerMixin & Partial<RectangleCornerMixin>
+  const named = CORNERS.filter((corner) => params[corner] !== undefined)
+  if (named.length > 0) {
+    for (const corner of named) node[corner] = readNumber(params[corner], corner)
+  } else {
+    node.cornerRadius = readNumber(params.radius, 'radius')
+  }
+  afterMutation()
+  return { id: node.id, name: node.name, cornerRadius: node.cornerRadius === figma.mixed ? 'mixed' : node.cornerRadius }
+}
+
+async function setNodeName(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveScene(params.nodeId)
+  const name = String(params.name ?? '').trim()
+  if (name === '') throw new Error('A layer needs a name')
+  node.name = name
+  afterMutation(true)
+  return { id: node.id, name: node.name }
+}
+
+async function setVisibility(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveScene(params.nodeId)
+  if (params.opacity !== undefined) {
+    const opacity = readNumber(params.opacity, 'opacity')
+    if (opacity < 0 || opacity > 1) throw new Error('opacity must be between 0 and 1')
+    ;(node as SceneNode & MinimalBlendMixin).opacity = opacity
+  }
+  if (params.visible !== undefined) node.visible = params.visible === true
+  if (params.locked !== undefined) node.locked = params.locked === true
+  afterMutation(true)
+  return { id: node.id, name: node.name, visible: node.visible, locked: node.locked }
+}
+
+async function setEffects(params: Record<string, unknown>): Promise<unknown> {
+  const node = (await resolveFor(
+    params.nodeId,
+    (candidate) => 'effects' in candidate,
+    'it takes no effects',
+  )) as SceneNode & BlendMixin
+
+  const asked = Array.isArray(params.effects) ? params.effects : []
+  const effects: Effect[] = asked.map((raw) => {
+    const entry = (raw ?? {}) as Record<string, unknown>
+    const kind = String(entry.type ?? 'DROP_SHADOW')
+    const radius = entry.radius === undefined ? 4 : readNumber(entry.radius, 'radius')
+    if (kind === 'LAYER_BLUR' || kind === 'BACKGROUND_BLUR') {
+      return { type: kind, radius, visible: true } as Effect
+    }
+    if (kind !== 'DROP_SHADOW' && kind !== 'INNER_SHADOW') {
+      throw new Error(`Unknown effect ${kind}. Use DROP_SHADOW, INNER_SHADOW, LAYER_BLUR or BACKGROUND_BLUR.`)
+    }
+    const colour = entry.color === undefined ? { r: 0, g: 0, b: 0 } : readColor(entry.color)
+    const alpha = entry.alpha === undefined ? 0.25 : readNumber(entry.alpha, 'alpha')
+    return {
+      type: kind,
+      color: { ...colour, a: alpha },
+      offset: {
+        x: entry.offsetX === undefined ? 0 : readNumber(entry.offsetX, 'offsetX'),
+        y: entry.offsetY === undefined ? 2 : readNumber(entry.offsetY, 'offsetY'),
+      },
+      radius,
+      spread: entry.spread === undefined ? 0 : readNumber(entry.spread, 'spread'),
+      visible: true,
+      blendMode: 'NORMAL',
+    } as Effect
+  })
+
+  node.effects = effects
+  afterMutation()
+  return { id: node.id, name: node.name, effects: effects.length }
+}
+
+// -------------------------------------------------------------------- text
+
+async function setTextStyle(params: Record<string, unknown>): Promise<unknown> {
+  const node = (await resolveFor(
+    params.nodeId,
+    (candidate) => candidate.type === 'TEXT',
+    'only a TEXT layer has type to set',
+  )) as TextNode
+  await loadFontsOf(node)
+
+  if (params.fontFamily !== undefined || params.fontStyle !== undefined) {
+    const current = node.fontName === figma.mixed ? { family: 'Inter', style: 'Regular' } : node.fontName
+    node.fontName = await readFont(params, current)
+  }
+  if (params.fontSize !== undefined) node.fontSize = readNumber(params.fontSize, 'fontSize')
+  if (params.lineHeight !== undefined) {
+    node.lineHeight = { unit: 'PIXELS', value: readNumber(params.lineHeight, 'lineHeight') }
+  }
+  if (params.letterSpacing !== undefined) {
+    node.letterSpacing = { unit: 'PIXELS', value: readNumber(params.letterSpacing, 'letterSpacing') }
+  }
+  if (params.align !== undefined) node.textAlignHorizontal = params.align as TextNode['textAlignHorizontal']
+  if (params.color !== undefined) node.fills = [{ type: 'SOLID', color: readColor(params.color) }]
+  if (params.autoResize !== undefined) node.textAutoResize = params.autoResize as TextNode['textAutoResize']
+
+  afterMutation()
+  return {
+    id: node.id,
+    name: node.name,
+    fontSize: node.fontSize === figma.mixed ? 'mixed' : node.fontSize,
+    fontName: node.fontName === figma.mixed ? 'mixed' : node.fontName,
+  }
+}
+
+// ------------------------------------------------------------------ layout
+
+async function setLayoutSizing(params: Record<string, unknown>): Promise<unknown> {
+  const node = (await resolveFor(
+    params.nodeId,
+    (candidate) => 'layoutSizingHorizontal' in candidate,
+    'only a child of an auto-layout frame is sized this way',
+  )) as SceneNode & AutoLayoutChildrenMixin & { layoutSizingHorizontal: 'FIXED' | 'HUG' | 'FILL' }
+  const sized = node as unknown as {
+    layoutSizingHorizontal: 'FIXED' | 'HUG' | 'FILL'
+    layoutSizingVertical: 'FIXED' | 'HUG' | 'FILL'
+  }
+  if (params.horizontal !== undefined) {
+    sized.layoutSizingHorizontal = params.horizontal as 'FIXED' | 'HUG' | 'FILL'
+  }
+  if (params.vertical !== undefined) {
+    sized.layoutSizingVertical = params.vertical as 'FIXED' | 'HUG' | 'FILL'
+  }
+  afterMutation()
+  return {
+    id: node.id,
+    name: node.name,
+    horizontal: sized.layoutSizingHorizontal,
+    vertical: sized.layoutSizingVertical,
+  }
+}
+
+// --------------------------------------------------------- the design system
+//
+// An agent asked to "match our button" needs to know what "our button" is. One
+// read answers that: the components it can instantiate, the styles it can
+// apply, and the variables it can bind — with the ids each of those needs.
+
+const MAX_LIBRARY = 200
+
+async function listLibrary(params: Record<string, unknown>): Promise<unknown> {
+  const want = (name: string) =>
+    params.only === undefined || params.only === '' || String(params.only) === name || params.only === 'all'
+
+  const out: Record<string, unknown> = {}
+
+  if (want('components')) {
+    const found = figma.currentPage.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] })
+    out.components = found.slice(0, MAX_LIBRARY).map((node) => ({
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      width: Math.round(node.width),
+      height: Math.round(node.height),
+    }))
+    out.componentsTruncated = found.length > MAX_LIBRARY
+  }
+
+  if (want('styles')) {
+    const [paints, texts, effects] = await Promise.all([
+      figma.getLocalPaintStylesAsync(),
+      figma.getLocalTextStylesAsync(),
+      figma.getLocalEffectStylesAsync(),
+    ])
+    const shape = (style: BaseStyle) => ({ id: style.id, name: style.name })
+    out.styles = {
+      paint: paints.slice(0, MAX_LIBRARY).map(shape),
+      text: texts.slice(0, MAX_LIBRARY).map(shape),
+      effect: effects.slice(0, MAX_LIBRARY).map(shape),
+    }
+  }
+
+  if (want('variables')) {
+    const collections = await figma.variables.getLocalVariableCollectionsAsync()
+    const variables = await figma.variables.getLocalVariablesAsync()
+    out.variables = variables.slice(0, MAX_LIBRARY).map((variable) => ({
+      id: variable.id,
+      name: variable.name,
+      type: variable.resolvedType,
+      collection: collections.find((entry) => entry.id === variable.variableCollectionId)?.name ?? null,
+    }))
+    out.variablesTruncated = variables.length > MAX_LIBRARY
+  }
+
+  return out
+}
+
+async function applyStyle(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveScene(params.nodeId)
+  const id = String(params.styleId ?? '')
+  const style = await figma.getStyleByIdAsync(id)
+  if (style === null) throw new Error(`No style with id ${id}`)
+
+  if (style.type === 'PAINT') {
+    if (!('setFillStyleIdAsync' in node)) throw new Error(`${node.name} takes no fill style`)
+    await (node as SceneNode & MinimalFillsMixin).setFillStyleIdAsync(id)
+  } else if (style.type === 'TEXT') {
+    if (node.type !== 'TEXT') throw new Error(`${node.name} is a ${node.type}, not a TEXT layer`)
+    await loadFontsOf(node)
+    await node.setTextStyleIdAsync(id)
+  } else if (style.type === 'EFFECT') {
+    await (node as SceneNode & BlendMixin).setEffectStyleIdAsync(id)
+  } else {
+    throw new Error(`${style.name} is a ${style.type} style, which cannot be applied to a layer this way`)
+  }
+
+  afterMutation()
+  return { id: node.id, name: node.name, style: style.name }
+}
+
+async function bindVariable(params: Record<string, unknown>): Promise<unknown> {
+  const node = await resolveScene(params.nodeId)
+  const variable = await figma.variables.getVariableByIdAsync(String(params.variableId ?? ''))
+  if (variable === null) throw new Error(`No variable with id ${String(params.variableId)}`)
+  const field = String(params.field ?? '')
+
+  // A colour lives inside a paint, not on the node, so it binds differently
+  // from a number like cornerRadius. Both are "bind a variable" to a caller.
+  if (field === 'fill' || field === 'stroke') {
+    const key = field === 'fill' ? 'fills' : 'strokes'
+    const target = node as unknown as Record<string, readonly Paint[] | typeof figma.mixed>
+    const current = target[key]
+    if (current === figma.mixed || !Array.isArray(current) || current.length === 0) {
+      throw new Error(`${node.name} has no single ${field} to bind; set one first with figma_set_${field}`)
+    }
+    target[key] = [figma.variables.setBoundVariableForPaint(current[0] as SolidPaint, 'color', variable)]
+  } else {
+    ;(node as SceneNode & { setBoundVariable: (field: string, value: Variable) => void }).setBoundVariable(
+      field,
+      variable,
+    )
+  }
+
+  afterMutation()
+  return { id: node.id, name: node.name, field, variable: variable.name }
+}
+
 /** Commands the relay can issue. Errors are returned to the caller, not thrown away. */
 async function handleRequest(command: string, params: Record<string, unknown>): Promise<unknown> {
   switch (command) {
@@ -2108,6 +2516,42 @@ async function handleRequest(command: string, params: Record<string, unknown>): 
     }
     case 'set_fill':
       return setFill(params)
+    case 'create_text':
+      return createText(params)
+    case 'create_rectangle':
+      return createRectangle(params)
+    case 'create_ellipse':
+      return createEllipse(params)
+    case 'create_svg':
+      return createSvg(params)
+    case 'create_instance':
+      return createInstance(params)
+    case 'clone_node':
+      return cloneNode(params)
+    case 'move_node':
+      return moveNode(params)
+    case 'delete_node':
+      return deleteNode(params)
+    case 'set_bounds':
+      return setBounds(params)
+    case 'set_corner_radius':
+      return setCornerRadius(params)
+    case 'set_node_name':
+      return setNodeName(params)
+    case 'set_visibility':
+      return setVisibility(params)
+    case 'set_effects':
+      return setEffects(params)
+    case 'set_text_style':
+      return setTextStyle(params)
+    case 'set_layout_sizing':
+      return setLayoutSizing(params)
+    case 'list_library':
+      return listLibrary(params)
+    case 'apply_style':
+      return applyStyle(params)
+    case 'bind_variable':
+      return bindVariable(params)
     case 'set_stroke':
       return setStroke(params)
     case 'set_text':

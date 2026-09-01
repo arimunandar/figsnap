@@ -34,13 +34,19 @@ const http = createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   const body =
     url.pathname === '/fs'
-      ? {
-          path: url.searchParams.get('path') ?? '/Users/designer',
-          parent: '/Users',
-          home: '/Users/designer',
-          directories: ['work', 'checkout-app'],
-          isProject: true,
-        }
+      ? (() => {
+          // A real listing derives the parent from the path, and the picker
+          // walks up as well as down.
+          const path = url.searchParams.get('path') ?? '/Users/designer'
+          const parts = path.split('/').filter((part) => part !== '')
+          return {
+            path,
+            parent: parts.length > 1 ? `/${parts.slice(0, -1).join('/')}` : null,
+            home: '/Users/designer',
+            directories: ['work', 'checkout-app'],
+            isProject: true,
+          }
+        })()
       : url.pathname === '/tools'
         ? {
             tools: [
@@ -89,18 +95,21 @@ const { window, id, send, posted, settle, workspace } = await openPanel({
   },
 })
 
-check('the panel opens on the workspace, showing code', workspace().hidden === false && id('agent-column').hidden === true)
-check('and offers an Agent button', id('agent-toggle-page') !== null)
-
-// The agent takes the third column outright, tab strip included — the point is
-// having the layer tree and the preview beside the conversation.
-id('agent-toggle-page').click()
-await settle()
-check('the agent takes over the code column',
-  id('agent-column').hidden === false && id('code-tabs').hidden === true && id('editor').hidden === true)
+// The agent is why the panel is open, so it holds the third column from the
+// start; the generated code is one click away on the same button.
+check('the panel opens on the agent, not the code',
+  workspace().hidden === false && id('agent-column').hidden === false &&
+  id('code-tabs').hidden === true && id('editor').hidden === true)
 check('the rest of the workspace stays put',
   workspace().hidden === false && id('tree-panel').hidden === false)
-check('and the button offers the code back', id('agent-toggle-page').textContent === 'Code')
+check('and the button offers the code', id('agent-toggle-page').textContent === 'Code')
+
+id('agent-toggle-page').click()
+await settle()
+check('which it gives back on request',
+  id('agent-column').hidden === true && id('code-tabs').hidden === false && id('editor').hidden === false)
+id('agent-toggle-page').click()
+await settle()
 
 // A stored token means the daemon was paired before, so the panel dials on its
 // own rather than waiting for a click.
@@ -137,18 +146,24 @@ check('a stale replacement close is ignored', id('agent-dot').className === 'dot
 // Pairing and the reference live on their own page, behind Setup; only the
 // session controls are in the column.
 
+// Setup and End sit behind one control, so the switch that matters is not one
+// of four things competing in a 26px strip.
+id('agent-more').click()
+await settle()
+check('the session menu opens', id('agent-more-menu').hidden === false)
 id('agent-setup-link').click()
 await settle()
 check('Setup opens the pairing page', id('agent-page').hidden === false)
+check('and the menu closes behind it', id('agent-more-menu').hidden === true)
 
 push({ kind: 'harnesses', harnesses: HARNESSES })
 push({ kind: 'state', harness: null, sessionId: null, cwd: '', running: false, writes: false, auto: true, connected: true })
 await settle()
 
-const chips = () => [...id('agent-harnesses').querySelectorAll('.chip')]
-check('the harness picker lists what the daemon found', chips().length === 2, chips().map((chip) => chip.textContent).join(' | '))
+const harnessChips = () => [...id('agent-harnesses').querySelectorAll('.chip')]
+check('the harness picker lists what the daemon found', harnessChips().length === 2, harnessChips().map((chip) => chip.textContent).join(' | '))
 check('one that is not installed cannot be picked',
-  chips()[1].disabled === true && chips()[1].textContent.includes('not installed'))
+  harnessChips()[1].disabled === true && harnessChips()[1].textContent.includes('not installed'))
 check('starting is refused until a harness is picked', id('agent-start').disabled === true)
 
 // A machine with nothing installed should say so, not present a row of chips
@@ -166,12 +181,12 @@ check('the daemon answers the directory question a plugin cannot',
 check('and its subdirectories are offered',
   [...id('agent-dirs').querySelectorAll('.chip')].map((chip) => chip.textContent).join(',') === 'work,checkout-app')
 
-chips()[0].click()
+harnessChips()[0].click()
 await settle()
 // The last one, not the first: browsing the filesystem stores a directory
 // before a harness has been picked, and that write is also a save.
 const lastStored = () => posted.filter((message) => message.type === 'save-agent-settings').pop()
-check('picking a harness marks it', chips()[0].classList.contains('current'))
+check('picking a harness marks it', harnessChips()[0].classList.contains('current'))
 check('and stores the choice', lastStored()?.harness === 'claude', JSON.stringify(lastStored()))
 check('and starting is now possible', id('agent-start').disabled === false)
 
@@ -184,8 +199,9 @@ window.dispatchEvent(Object.assign(new window.Event('keydown'), { key: 'Escape' 
 await settle()
 check('leaving Setup returns to the workspace with the agent still open',
   id('agent-page').hidden === true && id('agent-column').hidden === false)
-check('the strip says what will start', id('agent-session').textContent.includes('Claude Code'),
-  id('agent-session').textContent)
+// The strip names the folder, because that is the thing it is also a button for.
+check('the strip names the folder that will be worked in',
+  id('agent-session').textContent === 'Ready · designer', id('agent-session').textContent)
 check('and the chat waits to be started', id('agent-idle').hidden === false && id('agent-chat').hidden === true)
 
 received.length = 0
@@ -201,7 +217,7 @@ await settle()
 check('a session reveals the chat', id('agent-chat').hidden === false && id('agent-idle').hidden === true)
 check('and the strip names the session and its directory',
   id('agent-session').textContent === 'Claude Code · designer', id('agent-session').textContent)
-check('and the start button becomes an end', id('agent-start').hidden === true && id('agent-stop').hidden === false)
+check('and the start button gives way to End', id('agent-start').hidden === true && id('agent-stop').disabled === false)
 check('the session id is stored, so a torn-down runtime can resume', lastStored()?.sessionId === 's1')
 
 // ---------------------------------------------------------------- context
@@ -209,35 +225,96 @@ check('the session id is stored, so a torn-down runtime can resume', lastStored(
 // On by default: the whole reason to chat inside the plugin is that "this"
 // means whatever is on the canvas.
 
-check('with nothing selected there is nothing to attach',
-  id('agent-context-label').textContent === 'Nothing selected' && id('agent-context-on').disabled === true)
+// Ending the turn is what closes an answer off, so a suite that wants a clean
+// transcript ends one rather than reaching into the DOM behind the panel.
+const agentClear = async () => {
+  push({ kind: 'turn', status: 'ended', stopReason: 'end_turn' })
+  await settle()
+  id('agent-log').textContent = ''
+}
+const chips = () => [...id('agent-context-chips').querySelectorAll('.context-chip')]
+// The + offers both things it could mean; adding the selection is the first.
+const addSelection = async () => {
+  id('agent-context-add').click()
+  await settle()
+  id('agent-attach-menu').querySelectorAll('.command')[0].click()
+  await settle()
+}
+const chipNames = () => chips().map((chip) => chip.querySelector('.name').textContent)
+const select = (...rows) =>
+  send({ type: 'selected', id: rows[0]?.id ?? null, ids: rows.map((row) => row.id), rows })
 
-send({
-  type: 'selected',
-  id: '21:10314',
-  ids: ['21:10314'],
-  rows: [{ id: '21:10314', name: 'Search-notyping', type: 'FRAME', width: 375, height: 812, childCount: 7 }],
-})
+const search = { id: '21:10314', name: 'Search-notyping', type: 'FRAME', width: 375, height: 812, childCount: 7 }
+const sheet = { id: '21:20000', name: 'Bottomsheet Add to WG', type: 'FRAME', width: 375, height: 300, childCount: 3 }
+const button = { id: '21:30000', name: 'Done button', type: 'INSTANCE', width: 160, height: 44, childCount: 1 }
+
+check('with nothing selected there is nothing to attach',
+  chips().length === 0 && id('agent-context-label').hidden === false &&
+  id('agent-context-label').textContent === 'Nothing selected')
+
+select(search)
 await settle()
-check('a selection is offered as context, already on',
-  id('agent-context-label').textContent === 'Selection: Search-notyping' && id('agent-context-on').checked === true)
+check('a selection becomes a chip on its own', chipNames().join() === 'Search-notyping', chipNames().join())
+check('marked as following the canvas rather than pinned', chips()[0].classList.contains('live'))
+
+// Following means replaced, not appended: clicking around the canvas must not
+// pile up a dozen chips.
+select(sheet)
+await settle()
+check('selecting something else replaces it', chipNames().join() === 'Bottomsheet Add to WG', chipNames().join())
 
 received.length = 0
 id('agent-input').value = 'what does this say'
 id('agent-composer').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
 await settle()
 check('the selection travels with the message',
-  sawFrame('prompt')?.context?.rows?.[0]?.id === '21:10314', JSON.stringify(sawFrame('prompt')?.context))
-check('and the transcript records what went with it',
-  id('agent-log').textContent.includes('Search-notyping'))
+  sawFrame('prompt')?.context?.rows?.[0]?.id === '21:20000', JSON.stringify(sawFrame('prompt')?.context))
+check('and the question is in the transcript, on its own side',
+  id('agent-log').querySelector('.turn-user')?.textContent.includes('what does this say') === true)
+
+// "Make B match A" needs two nodes, and only one of them can be selected.
+await addSelection()
+check('adding pins what was following', chips()[0].classList.contains('live') === false)
+select(button)
+await settle()
+check('and a pinned list stops following the canvas',
+  chipNames().join() === 'Bottomsheet Add to WG', chipNames().join())
+
+await addSelection()
+check('so the second one is added rather than swapped in',
+  chipNames().join() === 'Bottomsheet Add to WG,Done button', chipNames().join())
+
+await addSelection()
+check('adding the same layer twice changes nothing',
+  chipNames().join() === 'Bottomsheet Add to WG,Done button', chipNames().join())
 
 received.length = 0
-id('agent-context-on').click()
+id('agent-input').value = 'make the button match the sheet'
+id('agent-composer').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
+await settle()
+check('both travel with the message',
+  sawFrame('prompt')?.context?.rows?.map((row) => row.id).join() === '21:20000,21:30000',
+  JSON.stringify(sawFrame('prompt')?.context?.rows?.map((row) => row.id)))
+check('and they survive the message they were sent with', chips().length === 2)
+
+chips()[0].querySelector('.drop').click()
+await settle()
+check('a chip can be dropped', chipNames().join() === 'Done button', chipNames().join())
+
+// An empty list is a decision, not a gap: it stays empty and sends nothing.
+received.length = 0
+chips()[0].querySelector('.drop').click()
+await settle()
+check('dropping the last one leaves no context',
+  chips().length === 0 && id('agent-context-label').textContent === 'No context')
 id('agent-input').value = 'and now without'
 id('agent-composer').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
 await settle()
-check('turning it off sends the words alone', sawFrame('prompt')?.context === undefined)
-id('agent-context-on').click()
+check('so the words go alone', sawFrame('prompt')?.context === undefined)
+
+id('agent-context-follow').click()
+await settle()
+check('and following can be resumed', chips()[0]?.classList.contains('live') === true, chipNames().join())
 
 // ------------------------------------------------------------------ asking
 
@@ -251,7 +328,33 @@ check('and what was asked is in the transcript', id('agent-log').textContent.inc
 
 push({ kind: 'turn', status: 'started' })
 await settle()
-check('the panel says it is working', id('agent-turn').textContent === 'Answering…')
+check('the panel says it is working', id('agent-turn').textContent === 'Working')
+
+// ----------------------------------------------------------------- markdown
+//
+// An agent answers in Markdown. Rendering it as text is a wall of asterisks.
+
+chunk('agent_message_chunk', '## Findings\n\nThe **CTA** uses `--Spacing-Large`.\n\n- 78 lines\n- 399 lines\n\n```css\n.a { color: red }\n```\n')
+await settle()
+const answer = () => id('agent-log').querySelector('.turn-agent')
+check('headings are set as headings', answer()?.querySelector('.md-heading')?.textContent === 'Findings')
+check('emphasis and code spans become real elements',
+  answer()?.querySelector('strong')?.textContent === 'CTA' &&
+  answer()?.querySelector('code')?.textContent === '--Spacing-Large')
+check('bullets become a list', answer()?.querySelectorAll('.md-list li').length === 2)
+check('and a fenced block becomes a code block',
+  answer()?.querySelector('.md-code code')?.textContent.includes('color: red') === true)
+check('with none of the markers left in the text',
+  answer()?.textContent.includes('**') === false && answer()?.textContent.includes('##') === false)
+
+// A half-arrived fence still renders, because a stream is read as it lands.
+await agentClear()
+chunk('agent_message_chunk', 'Here:\n\n```ts\nconst a = 1')
+await settle()
+check('an unclosed fence still renders while it streams',
+  id('agent-log').querySelector('.md-code') !== null)
+
+await agentClear()
 
 // ---------------------------------------------------------------- streaming
 
@@ -261,14 +364,23 @@ chunk('agent_message_chunk', 'The CTA ')
 chunk('agent_message_chunk', 'is a frame.')
 await settle()
 
-const blocks = () => [...id('agent-log').querySelectorAll('.agent-block')]
-const blockText = (className) => {
-  const block = blocks().find((entry) => entry.classList.contains(className))
-  return block?.querySelector('.agent-text')?.textContent ?? ''
-}
-check('chunks of one kind join into one paragraph', blockText('assistant') === 'The CTA is a frame.')
-check('thinking is kept apart from the answer', blockText('thought') === 'looking at the selection')
-check('and both are their own block', blocks().filter((block) => block.classList.contains('assistant')).length === 1)
+const said = () => [...id('agent-log').querySelectorAll('.turn-agent')].map((node) => node.textContent)
+const thought = () => [...id('agent-log').querySelectorAll('.activity-thought')].map((node) => node.textContent)
+check('chunks of one kind join into one paragraph', said().join('|') === 'The CTA is a frame.', said().join('|'))
+check('thinking is folded into the activity line, not the answer',
+  thought().join('|') === 'looking at the selection', thought().join('|'))
+// The answer arriving is what ends a stretch of work, so by now it has named
+// how long it took and folded itself away.
+const activity = () => id('agent-log').querySelector('.activity')
+check('the activity folds itself away once the answer starts',
+  activity()?.dataset.running === 'false' && activity()?.dataset.open === 'false',
+  `${activity()?.dataset.running}/${activity()?.dataset.open}`)
+check('and says how long it took',
+  /^(Worked|Thought) for \d+s$/.test(activity()?.querySelector('.activity-summary span')?.textContent ?? ''),
+  activity()?.querySelector('.activity-summary span')?.textContent)
+activity().querySelector('.activity-summary').click()
+await settle()
+check('but it opens again when asked', activity()?.dataset.open === 'true')
 
 // ---------------------------------------------------- a tool call, relayed
 
@@ -284,9 +396,185 @@ await settle()
 check('the tool call is shown while it runs', id('agent-log').textContent.includes('figma_get_selection'))
 update({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' })
 await settle()
-const tool = id('agent-log').querySelector('.agent-tool')
+const tool = id('agent-log').querySelector('.tool')
 check('and updated in place rather than repeated',
-  id('agent-log').querySelectorAll('.agent-tool').length === 1 && tool.classList.contains('completed'))
+  id('agent-log').querySelectorAll('.tool').length === 1 && tool.classList.contains('completed'))
+
+// -------------------------------------------------------------------- queue
+//
+// Typing while the agent is still answering is the normal way to use a chat.
+
+push({ kind: 'turn', status: 'started' })
+await settle()
+received.length = 0
+id('agent-input').value = 'and another thing'
+id('agent-composer').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
+await settle()
+check('a message sent mid-turn is not sent yet', sawFrame('prompt') === undefined)
+check('but it is on screen, marked as waiting',
+  id('agent-log').querySelector('.turn-user.queued')?.textContent.includes('and another thing') === true)
+check('and the panel says how many are waiting',
+  id('agent-turn').textContent === 'Working · 1 queued', id('agent-turn').textContent)
+
+push({ kind: 'turn', status: 'ended', stopReason: 'end_turn' })
+await settle()
+check('the finished turn releases it', sawFrame('prompt')?.text === 'and another thing')
+check('and it stops looking like it is waiting',
+  id('agent-log').querySelector('.turn-user.queued') === null)
+
+// ------------------------------------------------------------ folder picker
+//
+// Choosing the project is done from the chat, not from a settings page.
+
+id('agent-session').click()
+await settle()
+check('the folder picker opens from the strip', id('agent-folder-menu').hidden === false)
+check('showing where it is looking', id('agent-folder-path').textContent === '/Users/designer')
+const folders = () => [...id('agent-folder-list').querySelectorAll('.folder-row')]
+check('and what is inside', folders().map((row) => row.textContent.replace('›', '')).join() === 'work,checkout-app')
+
+folders()[0].click()
+await settle()
+check('a folder can be walked into', id('agent-folder-path').textContent === '/Users/designer/work')
+
+// A path is identified by its end, and CSS can only trim the other one.
+folders()[0].click()
+await settle()
+check('a deep path is trimmed from the front, not the end',
+  id('agent-folder-path').textContent === '…/designer/work/work', id('agent-folder-path').textContent)
+check('with the whole of it still available', id('agent-folder-path').title === '/Users/designer/work/work')
+id('agent-folder-up').click()
+await settle()
+// A live session carries the directory it opened with, so moving it is a restart
+// and the button has to say so rather than quietly doing nothing.
+check('and the button says what choosing it costs',
+  id('agent-folder-use').textContent.includes('restarts the session'), id('agent-folder-use').textContent)
+
+received.length = 0
+id('agent-folder-use').click()
+await settle()
+check('choosing one starts the session there',
+  sawFrame('start')?.cwd === '/Users/designer/work', JSON.stringify(sawFrame('start')))
+check('without resuming the conversation that belonged to the old folder',
+  sawFrame('start')?.resume === '')
+check('and the picker closes', id('agent-folder-menu').hidden === true)
+
+push({
+  kind: 'state',
+  harness: { id: 'claude', name: 'Claude Code' },
+  sessionId: 's2',
+  cwd: '/Users/designer/work',
+  running: false,
+  writes: false,
+  auto: true,
+  connected: true,
+})
+await settle()
+check('the strip follows it', id('agent-session').textContent === 'Claude Code · work', id('agent-session').textContent)
+
+// ------------------------------------------------------------- modes, files
+
+push({
+  kind: 'state',
+  harness: { id: 'claude', name: 'Claude Code' },
+  sessionId: 's1',
+  cwd: '/Users/designer',
+  running: false,
+  writes: false,
+  auto: true,
+  acceptsImages: true,
+  acceptsFiles: false,
+  modes: {
+    currentModeId: 'ask',
+    availableModes: [
+      { id: 'ask', name: 'Ask first' },
+      { id: 'go', name: 'Full access' },
+    ],
+  },
+  commands: [
+    { name: 'review', description: 'Review the current diff' },
+    { name: 'test', description: 'Run the test suite' },
+  ],
+  connected: true,
+})
+await settle()
+// A mode name runs long — "Bypass Permissions" — and a native select clips it
+// mid-word with no way to say so. A button ellipsises; the menu spells it out.
+check('the harness’s own mode is shown', id('agent-mode').hidden === false)
+check('by name, not by id',
+  id('agent-mode').querySelector('.label').textContent === 'Ask first',
+  id('agent-mode').textContent)
+// Two controls for one question is one too many, and the harness's is better.
+id('agent-mode').click()
+await settle()
+const modeRows = () => [...id('agent-mode-menu').querySelectorAll('.command')]
+check('the menu lists every mode', modeRows().length === 2)
+check('marking the one in use', modeRows()[0].classList.contains('current'))
+
+received.length = 0
+modeRows()[1].click()
+await settle()
+check('choosing another tells the harness', sawFrame('mode')?.modeId === 'go')
+check('and the menu closes', id('agent-mode-menu').hidden === true)
+
+// Commands are the harness's, published over ACP; a slash is where anyone looks.
+id('agent-input').value = '/re'
+id('agent-input').dispatchEvent(new window.Event('input', { bubbles: true }))
+await settle()
+const commands = () => [...id('agent-commands').querySelectorAll('.command')]
+check('a slash offers the commands the harness published',
+  id('agent-commands').hidden === false && commands().length === 1, String(commands().length))
+check('matched on what was typed', commands()[0].textContent.includes('/review'))
+commands()[0].click()
+await settle()
+check('picking one fills the box', id('agent-input').value === '/review ')
+id('agent-input').value = ''
+id('agent-input').dispatchEvent(new window.Event('input', { bubbles: true }))
+await settle()
+
+id('agent-context-add').click()
+await settle()
+const attachRows = [...id('agent-attach-menu').querySelectorAll('.command')]
+check('the + offers both things it could mean', attachRows.length === 2)
+// This harness reads images but not embedded resources, which is still enough
+// to attach something; a harness that reads neither is the one that refuses.
+check('and attaching is offered while the harness reads anything',
+  attachRows[1].disabled === false, attachRows[1].title)
+id('agent-context-add').click()
+await settle()
+
+// ------------------------------------------------------- tool call evidence
+
+await agentClear()
+update({ sessionUpdate: 'tool_call', toolCallId: 'ev', title: 'Write src/app.css', kind: 'edit', status: 'in_progress' })
+await settle()
+check('a call that can change things is marked',
+  id('agent-log').querySelector('.tool.writes') !== null)
+update({
+  sessionUpdate: 'tool_call_update',
+  toolCallId: 'ev',
+  status: 'completed',
+  content: [{ type: 'diff', path: 'src/app.css', oldText: '.a { color: red }', newText: '.a { color: blue }' }],
+})
+await settle()
+check('and the diff it wrote is shown, not just claimed',
+  id('agent-log').querySelector('.tool-content .diff-line.add')?.textContent.includes('color: blue') === true)
+check('with what it replaced beside it',
+  id('agent-log').querySelector('.tool-content .diff-line.del')?.textContent.includes('color: red') === true)
+
+update({
+  sessionUpdate: 'tool_call',
+  toolCallId: 'sh',
+  title: 'Ran echo',
+  status: 'completed',
+  content: [{ type: 'terminal', terminalId: 't', _figsnap: { output: 'from the terminal\n', exitStatus: { exitCode: 0 } } }],
+})
+await settle()
+check('a terminal shows what it printed and how it ended',
+  id('agent-log').textContent.includes('from the terminal') &&
+  id('agent-log').querySelector('.tool-content .foot.ok') !== null)
+
+await agentClear()
 
 // --------------------------------------------------------------- permission
 
@@ -307,10 +595,32 @@ check('naming the action', id('agent-permission-title').textContent.includes('se
 const options = [...id('agent-permission-options').querySelectorAll('button')]
 check('with both answers offered', options.map((option) => option.textContent).join(',') === 'Allow,Reject')
 
+check('with a way to stop being asked, on the thing that is asking',
+  id('agent-permission-always').hidden === false)
+
 options[0].click()
 await settle()
 check('answering sends the chosen option', sawFrame('permission')?.optionId === 'yes')
 check('and the prompt goes away', id('agent-permission').hidden === true)
+
+// A harness that offers its own standing allow is not given a second one.
+push({
+  kind: 'permission',
+  id: 'perm-2',
+  sessionId: 's1',
+  toolCall: { toolCallId: 't3', title: 'write a file' },
+  options: [
+    { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
+    { optionId: 'always', name: 'Always allow', kind: 'allow_always' },
+    { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+  ],
+})
+await settle()
+check('and stands aside when the harness has its own always',
+  id('agent-permission-always').hidden === true)
+received.length = 0
+;[...id('agent-permission-options').querySelectorAll('button')][2].click()
+await settle()
 
 // ------------------------------------------------------------------- writes
 
@@ -318,17 +628,24 @@ received.length = 0
 id('agent-writes').click()
 await settle()
 check('the edit switch is the designer\'s, not the agent\'s', sawFrame('writes')?.on === true)
+check('and it shows as on', id('agent-writes').getAttribute('aria-pressed') === 'true')
 check('and is remembered rather than re-chosen every session',
   posted.filter((message) => message.type === 'save-agent-settings').pop()?.writes === true)
 
-// Auto-approval is on by default: the gate that protects the canvas is the edit
-// switch above, and being asked twice for one change helps nobody.
-check('permissions are answered for you by default', id('agent-auto').checked === true)
-received.length = 0
-id('agent-auto').click()
+// There is no Auto switch in the chrome: a control that only decides whether a
+// prompt appears belongs on the prompt, and the way back on the line that says
+// it happened.
+check('the header carries no speculative auto switch', id('agent-auto') === null)
+
+push({ kind: 'notice', level: 'auto', text: 'Allowed automatically: set the fill' })
 await settle()
-check('turning it off tells the daemon to ask again', sawFrame('auto')?.on === false)
-check('and that is remembered too',
+const autoLine = () => [...id('agent-log').querySelectorAll('.event.auto')].pop()
+check('an automatic approval is on the record', autoLine()?.textContent.includes('set the fill') === true)
+received.length = 0
+autoLine().querySelector('.undo').click()
+await settle()
+check('and offers the way back from there', sawFrame('auto')?.on === false)
+check('which is remembered',
   posted.filter((message) => message.type === 'save-agent-settings').pop()?.auto === false)
 
 // ---------------------------------------------------------------- finishing
@@ -345,7 +662,7 @@ await settle()
 check('a running turn can be stopped', sawFrame('cancel') !== undefined)
 push({ kind: 'turn', status: 'ended', stopReason: 'cancelled' })
 await settle()
-check('and says so', id('agent-turn').textContent === 'Stopped.')
+check('and says so', id('agent-turn').textContent === 'Stopped')
 
 push({ kind: 'notice', level: 'error', text: 'the harness exited' })
 await settle()
@@ -354,7 +671,7 @@ check('a failure on the far side is shown, not swallowed',
 
 id('agent-toggle-page').click()
 await settle()
-check('the button gives the code column back',
+check('the button still gives the code column back',
   id('agent-column').hidden === true && id('code-tabs').hidden === false && id('editor').hidden === false)
 
 wss.close()

@@ -212,6 +212,26 @@ check('naming the layer, its size and its id',
   panel.spoken().includes('21:10314'))
 check('and the page it sits on', panel.spoken().includes('page "Bonds"'))
 
+// Several at once is the case that needs pinning in the panel: "make B match A"
+// names two nodes and only one of them can be selected.
+panel.frames.length = 0
+panel.send({
+  kind: 'prompt',
+  text: 'what is the context here',
+  context: {
+    page: 'Bonds',
+    rows: [
+      { id: '21:20000', name: 'Bottomsheet Add to WG', type: 'FRAME', width: 375, height: 300, childCount: 3 },
+      { id: '21:30000', name: 'Done button', type: 'INSTANCE', width: 160, height: 44, childCount: 1 },
+    ],
+  },
+})
+await panel.wait((frame) => frame.kind === 'turn' && frame.status === 'ended', 'the two-layer turn')
+check('several layers travel together',
+  panel.spoken().includes('Bottomsheet Add to WG') && panel.spoken().includes('Done button'))
+check('and are counted rather than described one at a time',
+  panel.spoken().includes('has these 2 layers selected'), panel.spoken().split('\n')[0])
+
 panel.frames.length = 0
 panel.send({ kind: 'prompt', text: 'what is the context here' })
 await panel.wait((frame) => frame.kind === 'turn' && frame.status === 'ended', 'the bare turn')
@@ -315,10 +335,80 @@ const cancelled = await panel.wait(
 )
 check('a turn can be stopped', cancelled.stopReason === 'cancelled', String(cancelled.stopReason))
 
+// ----------------------------------------------------------- what ACP offers
+//
+// The protocol carries more than a chat, and a client that ignores the rest
+// makes the harness look less capable than it is: its own modes, its own
+// commands, the evidence behind a tool call, and — for a design tool — a
+// picture rather than a description.
+
+const capable = await panel.wait((frame) => frame.kind === 'state' && frame.sessionId !== null, 'the session')
+check('the harness says whether it reads images', capable.acceptsImages === true)
+check('and the modes it offers are carried back',
+  capable.modes?.availableModes?.length === 2 && capable.modes.currentModeId === 'ask',
+  JSON.stringify(capable.modes?.currentModeId))
+check('as are the commands it publishes',
+  capable.commands?.map((command) => command.name).join() === 'review,test',
+  JSON.stringify(capable.commands))
+
+panel.frames.length = 0
+panel.send({ kind: 'mode', modeId: 'go' })
+await panel.wait((frame) => frame.kind === 'state' && frame.modes?.currentModeId === 'go', 'the mode change')
+panel.frames.length = 0
+panel.send({ kind: 'prompt', text: 'what mode is this' })
+await panel.wait((frame) => frame.kind === 'turn' && frame.status === 'ended', 'the mode turn')
+check('switching mode reaches the harness', panel.spoken() === 'mode is go', panel.spoken())
+
+panel.frames.length = 0
+panel.send({
+  kind: 'prompt',
+  text: 'here is a picture',
+  context: { page: 'Bonds', rows: [{ id: '1:2', name: 'CTA', type: 'FRAME', width: 10, height: 10 }], images: [{ data: 'aGk=', mimeType: 'image/png' }] },
+})
+await panel.wait((frame) => frame.kind === 'turn' && frame.status === 'ended', 'the picture turn')
+check('a picture of the design travels as an image block',
+  panel.spoken() === 'picture image/png', panel.spoken())
+
+panel.frames.length = 0
+panel.send({ kind: 'prompt', text: 'attach evidence' })
+await panel.wait((frame) => frame.kind === 'turn' && frame.status === 'ended', 'the evidence turn')
+const withDiff = panel.frames.find(
+  (frame) => frame.kind === 'update' && Array.isArray(frame.update.content) && frame.update.content[0]?.type === 'diff',
+)
+check('a tool call carries the diff it wrote',
+  withDiff?.update.content[0].newText === '.a { color: blue }', JSON.stringify(withDiff?.update.content?.[0]?.path))
+
+panel.frames.length = 0
+panel.send({ kind: 'prompt', text: 'run a shell tool' })
+await panel.wait((frame) => frame.kind === 'turn' && frame.status === 'ended', 'the shell turn')
+const withTerminal = panel.frames.find(
+  (frame) =>
+    frame.kind === 'update' && Array.isArray(frame.update.content) && frame.update.content[0]?.type === 'terminal',
+)
+// The pointer is useless to the panel, which owns no terminals; the daemon does,
+// so it resolves it on the way past.
+check('and a terminal pointer arrives already resolved',
+  withTerminal?.update.content[0]?._figsnap?.output?.includes('from the terminal') === true,
+  JSON.stringify(withTerminal?.update.content?.[0]?._figsnap?.output))
+
+panel.frames.length = 0
+panel.send({
+  kind: 'prompt',
+  text: 'here is a picture',
+  attachments: [{ name: 'brief.pdf', mimeType: 'application/pdf', data: 'JVBERi0=' }],
+})
+await panel.wait((frame) => frame.kind === 'turn' && frame.status === 'ended', 'the attachment turn')
+check('a file the harness cannot read is reported rather than dropped in silence',
+  panel.frames.some((frame) => frame.kind === 'notice' && frame.text.includes('brief.pdf')),
+  panel.frames.filter((frame) => frame.kind === 'notice').map((frame) => frame.text).join(' | '))
+
 // ------------------------------------------------------------------- tools
 
 const toolList = await (await fetch(`${BASE}/tools`, { headers: { 'x-figsnap-token': TOKEN } })).json()
-check('every tool is described for the agent', toolList.tools.length >= 13, `${toolList.tools.length} tools`)
+check('every tool is described for the agent', toolList.tools.length >= 31, `${toolList.tools.length} tools`)
+check('including the ones that make things, not only change them',
+  ['figma_create_text', 'figma_create_rectangle', 'figma_create_svg', 'figma_create_instance', 'figma_list_library']
+    .every((name) => toolList.tools.some((tool) => tool.name === name)))
 check('reading and writing are marked apart',
   toolList.tools.find((tool) => tool.name === 'figma_extract').annotations.readOnlyHint === true &&
   toolList.tools.find((tool) => tool.name === 'figma_set_fill').annotations.readOnlyHint === false)

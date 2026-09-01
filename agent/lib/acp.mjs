@@ -38,6 +38,13 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
   let harness = null
   let cwd = process.cwd()
   let turn = null
+  // What the harness said it could do at initialize, and where the session
+  // currently stands. Both are ACP's own answers rather than guesses: prompt
+  // capabilities decide whether a picture of the design is worth attaching, and
+  // modes are the harness's own idea of how much it may do unattended.
+  let capabilities = {}
+  let modes = null
+  let commands = []
   // Writes are a switch the designer holds, not a prompt the agent can talk
   // past: a harness told to skip permissions would otherwise reach the canvas
   // unannounced. See `mutates` in lib/tools.mjs.
@@ -65,6 +72,15 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
       running: turn !== null,
       writes,
       auto,
+      // A harness that cannot take an image should not be sent one, and the
+      // panel is the side that would have to render it.
+      acceptsImages: capabilities.promptCapabilities?.image === true,
+      // Anything that is not an image rides as an embedded resource, which is
+      // its own capability: a harness that cannot take one should be told to
+      // its face rather than handed a block it will drop.
+      acceptsFiles: capabilities.promptCapabilities?.embeddedContext === true,
+      modes,
+      commands,
       connected: connection !== null,
     }
   }
@@ -190,6 +206,34 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
     return entry
   }
 
+  /**
+   * What a terminal has printed so far.
+   *
+   * A tool call can carry `{type: 'terminal', terminalId}`, which is a pointer
+   * rather than content: only the client can resolve it, because the client is
+   * the side that owns the terminal. So the pointer is resolved here, on the
+   * way past, and the panel gets something it can actually render.
+   */
+  function terminalSnapshot(terminalId) {
+    const entry = terminals.get(terminalId)
+    if (entry === undefined) return null
+    const tail = entry.output.length > 4000 ? entry.output.slice(entry.output.length - 4000) : entry.output
+    return { output: tail, truncated: entry.truncated || tail !== entry.output, exitStatus: entry.exitStatus }
+  }
+
+  function resolveTerminals(update) {
+    const content = update?.content
+    if (!Array.isArray(content)) return update
+    return {
+      ...update,
+      content: content.map((block) =>
+        block?.type === 'terminal'
+          ? { ...block, _figsnap: terminalSnapshot(block.terminalId) }
+          : block,
+      ),
+    }
+  }
+
   function killEveryTerminal() {
     for (const entry of terminals.values()) entry.proc.kill('SIGTERM')
     terminals.clear()
@@ -201,7 +245,18 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
     return acp
       .client({ name: 'figsnap' })
       .onNotification(acp.methods.client.session.update, (ctx) => {
-        emit({ kind: 'update', sessionId: ctx.params.sessionId, update: ctx.params.update })
+        const update = ctx.params.update
+        // Modes and commands are session state, not transcript: they change what
+        // the panel offers, so they are tracked here rather than only drawn once.
+        if (update?.sessionUpdate === 'current_mode_update' && modes !== null) {
+          modes = { ...modes, currentModeId: update.currentModeId }
+          announce()
+        }
+        if (update?.sessionUpdate === 'available_commands_update') {
+          commands = update.availableCommands ?? []
+          announce()
+        }
+        emit({ kind: 'update', sessionId: ctx.params.sessionId, update: resolveTerminals(update) })
       })
       .onRequest(acp.methods.client.session.requestPermission, (ctx) => requestPermission(ctx.params))
       .onRequest(acp.methods.client.fs.readTextFile, async (ctx) => {
@@ -321,14 +376,19 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
       clearTimeout(slow)
     }
 
-    const canLoad = initialised.agentCapabilities?.loadSession === true
+    capabilities = initialised.agentCapabilities ?? {}
+    modes = null
+    commands = []
+
+    const canLoad = capabilities.loadSession === true
     if (resume && canLoad) {
       try {
-        await connection.agent.request(acp.methods.agent.session.load, {
+        const reloaded = await connection.agent.request(acp.methods.agent.session.load, {
           sessionId: resume,
           cwd,
           mcpServers,
         })
+        modes = reloaded?.modes ?? null
         sessionId = resume
         log(`resumed session ${resume}`)
         announce()
@@ -339,7 +399,24 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
       }
     }
 
-    const opened = await connection.agent.request(acp.methods.agent.session.new, { cwd, mcpServers })
+    let opened
+    try {
+      opened = await connection.agent.request(acp.methods.agent.session.new, { cwd, mcpServers })
+    } catch (error) {
+      // ACP has one named failure here worth translating: the harness has no
+      // login. Nothing this daemon can do about it — the fix is in a terminal —
+      // so say which harness and what to run rather than showing a raw code.
+      const methods = initialised.authMethods ?? []
+      if (String(error?.message ?? '').includes('auth') || error?.code === -32000) {
+        const names = methods.map((method) => method.name ?? method.id).join(', ')
+        throw new Error(
+          `${next.name} is not signed in. Run \`${next.cli}\` once in a terminal and complete its login` +
+            `${names === '' ? '' : ` (${names})`}, then start the session again.`,
+        )
+      }
+      throw error
+    }
+    modes = opened.modes ?? null
     sessionId = opened.sessionId
     log(`session ${sessionId} on ${next.name}`)
     announce()
@@ -372,17 +449,56 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
     }
   }
 
-  async function prompt(text, context) {
+  async function prompt(text, context, attachments) {
     if (connection === null || sessionId === null) throw new Error('No session. Pick a harness first.')
     if (turn !== null) throw new Error('The agent is still answering. Cancel it or wait.')
 
     // A separate block rather than a suffix on the question: it is context, not
     // something the designer said, and it should not read as part of the ask.
     const selection = selectionBlock(context)
-    const blocks = selection === null ? [{ type: 'text', text }] : [{ type: 'text', text }, selection]
+    const blocks = [{ type: 'text', text }]
+    if (selection !== null) blocks.push(selection)
+
+    // And, where the harness can take one, the design itself. This is a design
+    // tool: a model that can look at the frame answers questions about spacing
+    // and colour that no amount of CSS in a text block would settle. Sent only
+    // when `promptCapabilities.image` says it will be read rather than dropped.
+    if (capabilities.promptCapabilities?.image === true) {
+      for (const image of Array.isArray(context?.images) ? context.images.slice(0, 1) : []) {
+        if (typeof image?.data !== 'string' || image.data === '') continue
+        blocks.push({ type: 'image', data: image.data, mimeType: image.mimeType ?? 'image/png' })
+      }
+    }
+
+    // Files the designer attached by hand. A picture goes as an image where the
+    // harness reads images; everything else — a PDF, a spec, a font — goes as an
+    // embedded resource, and is dropped with a word rather than silently when
+    // the harness takes neither.
+    const refused = []
+    for (const file of Array.isArray(attachments) ? attachments : []) {
+      if (typeof file?.data !== 'string' || file.data === '') continue
+      const isImage = String(file.mimeType ?? '').startsWith('image/')
+      if (isImage && capabilities.promptCapabilities?.image === true) {
+        blocks.push({ type: 'image', data: file.data, mimeType: file.mimeType })
+      } else if (capabilities.promptCapabilities?.embeddedContext === true) {
+        blocks.push({
+          type: 'resource',
+          resource: { uri: `file://${file.name}`, mimeType: file.mimeType, blob: file.data },
+        })
+      } else {
+        refused.push(file.name)
+      }
+    }
+    if (refused.length > 0) {
+      notice('warn', `${harness?.name ?? 'This harness'} cannot take attachments, so ${refused.join(', ')} was left out.`)
+    }
 
     turn = { at: Date.now() }
     emit({ kind: 'turn', status: 'started' })
+    // Announced rather than only signalled: the panel decides from this whether
+    // the next message is sent or queued, and a `turn` frame is a transcript
+    // event that a reconnecting panel would never see.
+    announce()
     try {
       const answer = await connection.agent.request(acp.methods.agent.session.prompt, {
         sessionId,
@@ -426,6 +542,18 @@ export function createRunner({ plugin, log, emit, mcpServers }) {
     },
     setAuto(on) {
       auto = on === true
+      announce()
+    },
+    /**
+     * Switching the harness's own mode — plan, accept edits, and whatever else
+     * it offers. This is ACP's answer to "how much may it do unattended", and it
+     * is a better one than any switch invented here, because the harness is the
+     * side that knows what its modes mean.
+     */
+    async setMode(modeId) {
+      if (connection === null || sessionId === null) throw new Error('No session.')
+      await connection.agent.request(acp.methods.agent.session.setMode, { sessionId, modeId })
+      if (modes !== null) modes = { ...modes, currentModeId: modeId }
       announce()
     },
     writesAllowed() {

@@ -117,7 +117,7 @@ async function onPanelFrame(message) {
       case 'prompt':
         // Deliberately not awaited: the turn streams for minutes, and the panel
         // is told how it ended by the `turn` frames rather than by this returning.
-        runner.prompt(String(message.text ?? ''), message.context ?? null).catch((error) => {
+        runner.prompt(String(message.text ?? ''), message.context ?? null, message.attachments ?? []).catch((error) => {
           plugin.send({ kind: 'notice', level: 'error', text: error instanceof Error ? error.message : String(error) })
         })
         break
@@ -136,6 +136,10 @@ async function onPanelFrame(message) {
 
       case 'auto':
         runner.setAuto(message.on === true)
+        break
+
+      case 'mode':
+        await runner.setMode(String(message.modeId ?? ''))
         break
 
       case 'stop':

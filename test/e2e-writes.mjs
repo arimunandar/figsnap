@@ -140,6 +140,137 @@ check('a new layer refreshes the tree, not only the picture',
   panelMessages.some((message) => message.type === 'tree'),
   panelMessages.map((message) => message.type).join(','))
 
+// -------------------------------------------------------------- making things
+
+panelMessages.length = 0
+const madeText = await command('create_text', { text: 'Sign in', parentId: '1:1', fontSize: 16, x: 8, y: 8 })
+check('create_text answers with the new id', madeText.ok === true && typeof madeText.data.id === 'string',
+  madeText.error ?? '')
+const textNode = plugin.nodes.get(madeText.data.id)
+check('and the layer holds the words', textNode.characters === 'Sign in' && textNode.fontSize === 16)
+check('named after them when nothing else was given', textNode.name === 'Sign in')
+check('placed where it was told', textNode.parent === screen && textNode.x === 8)
+
+const missingFont = await command('create_text', { text: 'x', fontFamily: 'A Font Nobody Has' })
+check('a font this machine lacks is refused, not substituted',
+  missingFont.ok === false && String(missingFont.error).includes('no "A Font Nobody Has'), String(missingFont.error))
+
+const rect = await command('create_rectangle', {
+  parentId: '1:1', width: 200, height: 2, fill: { r: 0, g: 0, b: 0 }, cornerRadius: 1,
+})
+check('create_rectangle answers', rect.ok === true, rect.error ?? '')
+const rectNode = plugin.nodes.get(rect.data.id)
+check('sized and filled as asked', rectNode.width === 200 && rectNode.fills.length === 1)
+
+const ellipse = await command('create_ellipse', { parentId: '1:1', width: 40, height: 40 })
+check('create_ellipse answers', ellipse.ok === true, ellipse.error ?? '')
+
+const svg = await command('create_svg', { svg: '<svg viewBox="0 0 4 4"><rect width="4" height="4"/></svg>', parentId: '1:1' })
+check('create_svg draws real vectors rather than an image', svg.ok === true, svg.error ?? '')
+const notSvg = await command('create_svg', { svg: 'not markup' })
+check('and refuses what Figma cannot read', notSvg.ok === false, String(notSvg.error))
+
+// ----------------------------------------------------- moving things about
+
+const copy = await command('clone_node', { nodeId: rect.data.id })
+check('clone_node duplicates into the same parent',
+  copy.ok === true && screen.children.some((child) => child.id === copy.data.id),
+  copy.error ?? screen.children.map((child) => child.id).join())
+
+const moved = await command('move_node', { nodeId: rect.data.id, parentId: '1:2', index: 0 })
+check('move_node reparents and reorders',
+  moved.ok === true && button.children[0].id === rect.data.id, moved.error ?? '')
+
+const removed = await command('delete_node', { nodeId: copy.data.id })
+check('delete_node takes a layer away',
+  removed.ok === true && !screen.children.some((child) => child.id === copy.data.id), removed.error ?? '')
+
+// -------------------------------------------------------------- appearance
+
+const bounds = await command('set_bounds', { nodeId: '1:2', x: 12, width: 320 })
+check('set_bounds moves and resizes what it was given',
+  bounds.ok === true && button.x === 12 && button.width === 320, bounds.error ?? '')
+check('and leaves what it was not', button.height === 100)
+
+const radius = await command('set_corner_radius', { nodeId: '1:2', radius: 8 })
+check('set_corner_radius rounds every corner', radius.ok === true && button.cornerRadius === 8, radius.error ?? '')
+const corners = await command('set_corner_radius', { nodeId: '1:2', topLeftRadius: 2, bottomRightRadius: 6 })
+check('or each on its own',
+  corners.ok === true && button.topLeftRadius === 2 && button.bottomRightRadius === 6, corners.error ?? '')
+
+const renamed = await command('set_node_name', { nodeId: '1:2', name: 'Primary button' })
+check('set_node_name renames', renamed.ok === true && button.name === 'Primary button', renamed.error ?? '')
+const blank = await command('set_node_name', { nodeId: '1:2', name: '  ' })
+check('and refuses an empty one', blank.ok === false, String(blank.error))
+
+const faded = await command('set_visibility', { nodeId: '1:2', opacity: 0.5, locked: true })
+check('set_visibility fades and locks',
+  faded.ok === true && button.opacity === 0.5 && button.locked === true, faded.error ?? '')
+const clamped = await command('set_visibility', { nodeId: '1:2', opacity: 4 })
+check('and refuses an opacity outside 0-1', clamped.ok === false, String(clamped.error))
+
+const shadow = await command('set_effects', {
+  nodeId: '1:2',
+  effects: [{ type: 'DROP_SHADOW', color: { r: 0, g: 0, b: 0 }, alpha: 0.2, offsetY: 4, radius: 12 }],
+})
+check('set_effects gives it a shadow',
+  shadow.ok === true && button.effects[0].type === 'DROP_SHADOW' && button.effects[0].radius === 12,
+  shadow.error ?? '')
+check('with the alpha folded into the colour', button.effects[0].color.a === 0.2)
+const noEffects = await command('set_effects', { nodeId: '1:2', effects: [] })
+check('and an empty list clears them', noEffects.ok === true && button.effects.length === 0)
+const nonsense = await command('set_effects', { nodeId: '1:2', effects: [{ type: 'GLOW' }] })
+check('an invented effect is refused', nonsense.ok === false, String(nonsense.error))
+
+// -------------------------------------------------------------------- type
+
+const typed = await command('set_text_style', { nodeId: '1:3', fontSize: 22, align: 'CENTER', lineHeight: 28 })
+check('set_text_style applies only what it was given',
+  typed.ok === true && label.fontSize === 22 && label.textAlignHorizontal === 'CENTER' &&
+  label.lineHeight.value === 28, typed.error ?? '')
+check('and leaves the characters alone', label.characters === 'Save')
+
+// ------------------------------------------------------------------ layout
+
+const sizing = await command('set_layout_sizing', { nodeId: '1:3', horizontal: 'FILL' })
+check('set_layout_sizing is how a width is set inside auto layout',
+  sizing.ok === true && label.layoutSizingHorizontal === 'FILL', sizing.error ?? '')
+
+// ------------------------------------------------------ the design system
+
+figma.styles.set('S:brand', { id: 'S:brand', name: 'Brand/Primary', type: 'PAINT' })
+figma.variables.collections = [{ id: 'C:1', name: 'Tokens' }]
+figma.variables.store.set('V:radius', { id: 'V:radius', name: 'Radius/Large', resolvedType: 'FLOAT', variableCollectionId: 'C:1' })
+
+const library = await command('list_library', {})
+check('list_library reports the styles this file has',
+  library.ok === true && library.data.styles.paint[0].name === 'Brand/Primary', library.error ?? '')
+check('and its variables, with the collection they came from',
+  library.data.variables[0].collection === 'Tokens', JSON.stringify(library.data.variables))
+check('and the components an instance could be made from',
+  Array.isArray(library.data.components))
+
+const styled = await command('apply_style', { nodeId: '1:2', styleId: 'S:brand' })
+check('apply_style links the layer to the style rather than copying its value',
+  styled.ok === true && button.fillStyleId === 'S:brand', styled.error ?? '')
+const noStyle = await command('apply_style', { nodeId: '1:2', styleId: 'S:nope' })
+check('and an id that resolves to nothing says so', noStyle.ok === false, String(noStyle.error))
+
+const bound = await command('bind_variable', { nodeId: '1:2', variableId: 'V:radius', field: 'cornerRadius' })
+check('bind_variable ties a property to a token',
+  bound.ok === true && button.boundVariables.cornerRadius === 'V:radius', bound.error ?? '')
+
+button.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }]
+figma.variables.store.set('V:brand', { id: 'V:brand', name: 'Colour/Brand', resolvedType: 'COLOR', variableCollectionId: 'C:1' })
+const boundFill = await command('bind_variable', { nodeId: '1:2', variableId: 'V:brand', field: 'fill' })
+check('a colour binds through the paint, which is where it lives',
+  boundFill.ok === true && button.fills[0].boundVariables.color.id === 'V:brand', boundFill.error ?? '')
+
+button.fills = []
+const nothingToBind = await command('bind_variable', { nodeId: '1:2', variableId: 'V:brand', field: 'fill' })
+check('and a node with no fill is told to set one first',
+  nothingToBind.ok === false && String(nothingToBind.error).includes('set one first'), String(nothingToBind.error))
+
 // ------------------------------------------------------------------ versions
 
 const version = await command('save_version', { title: 'Before purple to red swap' })
