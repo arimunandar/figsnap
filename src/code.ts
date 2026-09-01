@@ -263,6 +263,7 @@ type BuildState = {
   count: number
   truncated: boolean
   svgCount: number
+  svgBytes: number
   options: ExtractOptions
 }
 
@@ -274,33 +275,22 @@ type BuildState = {
 // export the whole icon as one SVG and inline it.
 
 const VECTOR_TYPES = ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'LINE']
-// An icon is a handful of paths; anything larger is a picture, and belongs in
-// the PNG rather than inline in a component.
+// A per-node cap has to be generous, because failing it is worse than passing
+// it: the walk then descends and inlines every vector inside separately, which
+// costs the same bytes, produces fifty elements instead of one, and loses any
+// paint that lived on the wrapper — a flag's red disc, say. What actually needs
+// bounding is the total, so a page of illustrations cannot run away.
 const MAX_SVG_LAYERS = 80
-const MAX_SVG_BYTES = 24_000
+const MAX_SVG_BYTES = 90_000
+const MAX_SVG_TOTAL = 600_000
 
-function paints(value: unknown): boolean {
-  return Array.isArray(value) && value.some((paint) => paint && paint.visible !== false)
-}
-
-/** True when a node draws something of its own that an SVG export would drop. */
-function hasOwnPaint(node: SceneNode): boolean {
-  if ('fills' in node && node.fills !== figma.mixed && paints(node.fills)) return true
-  if ('strokes' in node && paints(node.strokes)) return true
-  if ('effects' in node && paints(node.effects)) return true
-  return false
-}
-
-/**
- * A node worth collapsing into one SVG: a vector, or a wrapper that contains
- * nothing but vectors and paints nothing itself. Collapsing at the outermost
- * such node keeps a two-path icon as one element instead of three nested divs.
- */
-async function exportSvg(node: SceneNode): Promise<string | null> {
+async function exportSvg(node: SceneNode, state: BuildState): Promise<string | null> {
   try {
     const svg = await node.exportAsync({ format: 'SVG_STRING' })
-    // Anything this big is a picture, not an icon; the PNG serves it better.
-    return svg.length <= MAX_SVG_BYTES ? svg : null
+    if (svg.length > MAX_SVG_BYTES) return null
+    if (state.svgBytes + svg.length > MAX_SVG_TOTAL) return null
+    state.svgBytes += svg.length
+    return svg
   } catch {
     return null
   }
@@ -309,7 +299,6 @@ async function exportSvg(node: SceneNode): Promise<string | null> {
 function isVectorOnly(node: SceneNode): boolean {
   if (VECTOR_TYPES.indexOf(node.type) !== -1) return true
   if (!('children' in node) || node.children.length === 0) return false
-  if (hasOwnPaint(node)) return false
   return node.children.every((child) => !child.visible || isVectorOnly(child))
 }
 
@@ -388,7 +377,7 @@ async function buildLayer(node: SceneNode, state: BuildState, isRoot: boolean): 
   // the walk stops there: the paths inside are the SVG's business, not the DOM's.
   // Only when the export works — a failure leaves the old shape rather than a hole.
   if (!isRoot && state.svgCount < MAX_SVG_LAYERS && isVectorOnly(node)) {
-    const svg = await exportSvg(node)
+    const svg = await exportSvg(node, state)
     if (svg !== null) {
       state.svgCount++
       layer.svg = svg
@@ -528,6 +517,15 @@ function needsPositioning(layer: Layer): boolean {
   )
 }
 
+// An image fill points at a file inside Figma that nothing outside can fetch, so
+// the box would otherwise render as a hole. A flat neutral reads as "a picture
+// goes here" without pretending to be the picture.
+const IMAGE_PLACEHOLDER = '#dfe3e8'
+
+function isImageFill(value: string): boolean {
+  return value.indexOf('url(') !== -1
+}
+
 const GENERIC_FAMILIES = ['sans-serif', 'serif', 'monospace', 'cursive', 'system-ui']
 
 /**
@@ -583,14 +581,74 @@ function size(value: number): string {
   return `${Math.round(value * 100) / 100}px`
 }
 
+function pixels(value: string): number {
+  const found = value.match(/^(-?[\d.]+)px$/)
+  return found ? Number(found[1]) : 0
+}
+
+/** How much padding a layer declares on each axis, or null if it declares none. */
+function paddingOf(layer: Layer): { block: number; inline: number } | null {
+  const shorthand = layer.css.find(([name]) => name === 'padding')
+  if (shorthand) {
+    const parts = shorthand[1].split(/\s+/).map(pixels)
+    if (parts.length === 1) return { block: parts[0] * 2, inline: parts[0] * 2 }
+    if (parts.length === 2) return { block: parts[0] * 2, inline: parts[1] * 2 }
+    if (parts.length === 3) return { block: parts[0] + parts[2], inline: parts[1] * 2 }
+    return { block: parts[0] + parts[2], inline: parts[1] + parts[3] }
+  }
+  const side = (name: string) => {
+    const found = layer.css.find(([property]) => property === name)
+    return found ? pixels(found[1]) : 0
+  }
+  const block = side('padding-top') + side('padding-bottom')
+  const inline = side('padding-left') + side('padding-right')
+  return block === 0 && inline === 0 ? null : { block, inline }
+}
+
+/** A negative auto-layout gap, and which margin it has to become. */
+function negativeGap(layer: Layer): { axis: 'top' | 'left'; amount: number } | null {
+  const gap = layer.css.find(([name]) => name === 'gap')
+  if (!gap) return null
+  const amount = pixels(gap[1])
+  if (amount >= 0) return null
+  const column = layer.css.some(([name, value]) => name === 'flex-direction' && value.indexOf('column') !== -1)
+  return { axis: column ? 'top' : 'left', amount }
+}
+
 function renderHtmlCss(root: Layer, width: number, height: number): string {
   const lines: string[] = []
   const walk = (layer: Layer, isRoot: boolean) => {
-    const declarations = layer.css.map(
-      ([property, value]) => `  ${property}: ${property === 'font-family' ? withFallback(value) : value};`,
-    )
+    let hasImage = false
+    const declarations = layer.css.map(([property, value]) => {
+      if (isImageFill(value)) {
+        hasImage = true
+        // The whole declaration goes, not just the url(): what Figma leaves
+        // beside it is sizing for an image that will not arrive.
+        return `  ${property.indexOf('background') === 0 ? 'background' : property}: ${IMAGE_PLACEHOLDER};`
+      }
+      return `  ${property}: ${property === 'font-family' ? withFallback(value) : value};`
+    })
     const declares = (property: string) => layer.css.some(([name]) => name === property)
     if (needsPositioning(layer)) declarations.push('  position: relative;')
+
+    // Figma lets padding exceed the frame that holds it, and lets auto-layout
+    // spacing go negative. CSS does neither: with border-box the padding wins
+    // and the element balloons, and a negative gap is discarded outright. The
+    // node's own size is the thing that is true, so the padding gives way.
+    const padding = paddingOf(layer)
+    if (padding !== null && layer.height > 0 && padding.block >= layer.height) {
+      if (!declares('height')) declarations.push(`  height: ${size(layer.height)};`)
+      declarations.push('  padding-top: 0;', '  padding-bottom: 0;', '  overflow: hidden;')
+    }
+    if (padding !== null && layer.width > 0 && padding.inline >= layer.width) {
+      if (!declares('width')) declarations.push(`  width: ${size(layer.width)};`)
+      declarations.push('  padding-left: 0;', '  padding-right: 0;')
+    }
+
+    // A negative gap has to become a negative margin; there is nowhere else for
+    // it to live, and simply dropping it moves every sibling.
+    const gap = negativeGap(layer)
+    if (gap !== null) declarations.push('  gap: 0;')
 
     // A Figma stroke is drawn inside the node's bounds, but Dev Mode CSS leaves
     // out any size it considers content-derived — so the border lands outside
@@ -607,9 +665,20 @@ function renderHtmlCss(root: Layer, width: number, height: number): string {
       if (!declares('height')) declarations.push(`  height: ${height}px;`)
     }
     if (declarations.length > 0) {
-      lines.push(`/* ${layer.name} — ${layer.nodeType} */`)
+      lines.push(
+        hasImage
+          ? `/* ${layer.name} — ${layer.nodeType}, image fill shown as a placeholder */`
+          : `/* ${layer.name} — ${layer.nodeType} */`,
+      )
       lines.push(`.${layer.kebab} {`)
       lines.push(...declarations)
+      lines.push('}')
+      lines.push('')
+    }
+    if (gap !== null) {
+      lines.push(`/* ${layer.name} — negative Figma spacing, as a margin */`)
+      lines.push(`.${layer.kebab} > * + * {`)
+      lines.push(`  margin-${gap.axis}: ${size(gap.amount)};`)
       lines.push('}')
       lines.push('')
     }
@@ -914,7 +983,7 @@ async function buildExtraction(node: SceneNode, options: ExtractOptions): Promis
       })
     : undefined
 
-  const state: BuildState = { taken: new Set(), count: 0, truncated: false, svgCount: 0, options }
+  const state: BuildState = { taken: new Set(), count: 0, truncated: false, svgCount: 0, svgBytes: 0, options }
   const root = await buildLayer(node, state, true)
   if (!root) throw new Error('Layer is hidden.')
 

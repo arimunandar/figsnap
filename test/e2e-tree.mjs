@@ -29,8 +29,16 @@ const top = makeNode('1:1', 'Group 1', 'GROUP', [middle, hidden])
 // the two shapes the html renderer has to correct for.
 const pinned = makeNode('5:1', 'Badge', 'FRAME', [], { border: '1px solid #624CF7', display: 'flex' })
 const floating = makeNode('6:2', 'Overlay', 'FRAME', [], { position: 'absolute', left: '0px' })
+// What Dev Mode writes for an image fill, and for spacing CSS cannot express.
+const photo = makeNode('5:2', 'Avatar', 'FRAME', [], {
+  background: 'url(<path-to-image>) lightgray 50% / cover no-repeat',
+})
+const squashed = makeNode('5:3', 'Underline', 'FRAME', [], { height: '4px', padding: '10px' })
+// The node really is 4px tall; Figma simply lets the padding overrun and clips.
+squashed.height = 4
+const tightened = makeNode('5:4', 'Stack', 'FRAME', [], { display: 'flex', 'flex-direction': 'column', gap: '-4px' })
 const holder = makeNode('6:1', 'Holder', 'FRAME', [floating], { display: 'block' })
-const fixtures = makeNode('5:0', 'Fixtures', 'FRAME', [pinned, holder])
+const fixtures = makeNode('5:0', 'Fixtures', 'FRAME', [pinned, holder, photo, squashed, tightened])
 
 const plugin = await startPlugin({ label: 'tree', pageChildren: [top], offPage: [fixtures] })
 const { get, body } = plugin
@@ -155,6 +163,21 @@ check('a layer with an absolute child is made a containing block',
   /\.holder \{[^}]*position: relative/.test(fixedHtml))
 check('but an absolute layer is not itself made relative',
   !/\.overlay \{[^}]*position: relative/.test(fixedHtml))
+
+// An image fill points inside Figma; outside it the box would be a hole.
+check('an image fill becomes a placeholder colour',
+  /\.avatar \{[^}]*background: #dfe3e8/.test(fixedHtml) && !fixedHtml.includes('url(<path-to-image>)'),
+  fixedHtml.slice(fixedHtml.indexOf('.avatar {'), fixedHtml.indexOf('.avatar {') + 70).replace(/\n/g, ' '))
+check('and says so, rather than looking like a design choice',
+  fixedHtml.includes('image fill shown as a placeholder'))
+
+// Figma lets padding exceed its frame and lets spacing go negative; CSS does
+// neither, and silently disagrees rather than erroring.
+check('padding larger than the frame gives way to the frame',
+  /\.underline \{[^}]*padding-top: 0;[^}]*padding-bottom: 0;[^}]*overflow: hidden/.test(fixedHtml))
+check('a negative gap becomes a margin',
+  /\.stack > \* \+ \* \{\s*margin-top: -4px/.test(fixedHtml) &&
+  /\.stack \{[^}]*gap: 0/.test(fixedHtml))
 
 const typo = await body('POST', '/extract', { nodeId: '3:1', format: 'html' })
 check('a lone font name gets a generic fallback',

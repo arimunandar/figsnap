@@ -497,6 +497,19 @@ with Figma:
   falls back to the browser default, a serif.
 - **The root gets its own width and height**, which Dev Mode leaves to a parent
   that only exists inside Figma.
+- **Padding larger than its frame gives way to the frame.** Figma allows that and
+  clips; CSS with `border-box` lets the padding win, so a 4px tab underline with
+  10px padding rendered as a 20px blob over the label.
+- **A negative auto-layout gap becomes a margin.** `gap: -4px` is not valid CSS
+  and is discarded outright, which shifts every sibling.
+- **An image fill becomes a flat placeholder colour.** The fill points at a file
+  inside Figma that nothing outside can fetch, so the box would be a hole.
+
+Icons collapse at the outermost vector-only node, so a fifty-path flag is one
+`<svg>` rather than fifty. The byte budget is a total (600 kB) rather than
+per-node, because failing a per-node cap was strictly worse: the walk then
+inlined every vector inside separately — the same bytes, fifty elements, and any
+paint that lived on the wrapper lost.
 
 Measured against the Figma render of a real bottomsheet, every layer lands within
 0.6px of the size Figma reports.
