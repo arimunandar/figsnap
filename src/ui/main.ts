@@ -2833,6 +2833,8 @@ function handleAgentFrame(message: Record<string, unknown>) {
 
     case 'harnesses':
       agentHarnesses = (message.harnesses as AgentHarness[]) ?? []
+      delete agentHistoryMenu.dataset.signature
+      delete agentIdleList.dataset.signature
       if (agentHarnessId !== '' && !agentHarnesses.some((harness) => harness.id === agentHarnessId)) {
         agentHarnessId = ''
       }
@@ -3063,6 +3065,9 @@ function renderAgentIdle() {
 
   const recent = agentSessions.slice(0, RECENT)
   agentIdleRecent.hidden = recent.length === 0
+  const signature = `${listSignature(recent)}~${agentSession.sessionId ?? ''}`
+  if (agentIdleList.dataset.signature === signature) return
+  agentIdleList.dataset.signature = signature
   agentIdleList.textContent = ''
   for (const record of recent) agentIdleList.appendChild(historyRow(record))
 }
@@ -3328,7 +3333,21 @@ function historyRow(record: AgentSessionRecord): HTMLDivElement {
   return row
 }
 
+/**
+ * What a rendered list is made of. Rebuilding one that has not changed replaces
+ * the row under the cursor mid-click: the handler belongs to a node that is no
+ * longer in the document, so nothing happens and the menu closes as if the
+ * click had missed. Opening the menu asks the daemon for the list, so an
+ * unchanged answer arriving a moment later is the common case, not a rare one.
+ */
+function listSignature(records: AgentSessionRecord[]): string {
+  return records.map((record) => `${record.id}:${record.title}:${record.updatedAt}`).join('|')
+}
+
 function renderHistory() {
+  const signature = `${listSignature(agentSessions)}~${agentSession.sessionId ?? ''}`
+  if (agentHistoryMenu.dataset.signature === signature) return
+  agentHistoryMenu.dataset.signature = signature
   agentHistoryMenu.textContent = ''
   if (agentSessions.length === 0) {
     const empty = document.createElement('p')
@@ -3345,6 +3364,7 @@ agentHistoryOpen.addEventListener('click', (event: Event) => {
   event.stopPropagation()
   closeMenus()
   agentHistoryMenu.hidden = false
+  delete agentHistoryMenu.dataset.signature
   renderHistory()
   // The harness may know more than this daemon does; ask while it is on screen.
   agentBridge.send({ kind: 'sessions' })

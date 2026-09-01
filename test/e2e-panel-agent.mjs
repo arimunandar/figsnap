@@ -565,6 +565,15 @@ check('the strip follows it', id('agent-session').textContent === 'Claude Code Â
 
 // ------------------------------------------------------------------ history
 
+// Fixed timestamps: two pushes of this have to be indistinguishable, which is
+// the whole point of the rebuild guard below.
+const PAST = [
+  { id: 's2', harness: 'claude', harnessName: 'Claude Code', cwd: '/Users/designer/work',
+    file: 'Bonds', title: 'make the CTA match our button', updatedAt: 1788250000000 },
+  { id: 'old', harness: 'codex', harnessName: 'Codex', cwd: '/Users/designer/checkout-app',
+    file: 'Checkout', title: 'write the sheet as a component', updatedAt: 1788150000000 },
+]
+
 push({
   kind: 'sessions',
   sessions: [
@@ -648,16 +657,17 @@ check('and the row says why',
   ghost().querySelector('.about').textContent)
 check('but it can still be forgotten', ghost().querySelector('.drop') !== null)
 
-push({
-  kind: 'sessions',
-  sessions: [
-    { id: 's2', harness: 'claude', harnessName: 'Claude Code', cwd: '/Users/designer/work',
-      file: 'Bonds', title: 'make the CTA match our button', updatedAt: Date.now() - 3 * 60_000 },
-    { id: 'old', harness: 'codex', harnessName: 'Codex', cwd: '/Users/designer/checkout-app',
-      file: 'Checkout', title: 'write the sheet as a component', updatedAt: Date.now() - 26 * 3_600_000 },
-  ],
-})
+push({ kind: 'sessions', sessions: PAST })
 await settle()
+
+// An unchanged list arriving while the menu is open must not replace the rows:
+// a row swapped out mid-click is a detached node whose handler never fires,
+// which reads as a click that did nothing. Opening the menu asks for the list,
+// so the same answer coming back a moment later is the common case.
+const firstRow = rows()[0]
+push({ kind: 'sessions', sessions: PAST })
+await settle()
+check('the same list twice leaves the rows where they were', rows()[0] === firstRow)
 
 received.length = 0
 rows()[1].querySelector('.history-open').click()
