@@ -44,6 +44,11 @@ export function createSessionStore({ log }) {
     try {
       const parsed = JSON.parse(raw)
       records = Array.isArray(parsed?.sessions) ? parsed.sessions.filter((entry) => entry && entry.id) : []
+      // Titles written before they were trimmed, or by a harness that hands
+      // back the whole first message, are cut down on the way in.
+      for (const entry of records) {
+        if (typeof entry.title === 'string') entry.title = titleFrom(entry.title)
+      }
     } catch {
       // A file this process wrote and cannot read is not worth failing over.
       log('sessions.json is unreadable; starting a fresh list')

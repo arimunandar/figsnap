@@ -23,7 +23,8 @@ const check = (name, ok, detail = '') => {
 
 const HARNESSES = [
   { id: 'claude', name: 'Claude Code', command: 'npx claude', available: true, note: '' },
-  { id: 'codex', name: 'Codex', command: 'npx codex', available: false, note: 'not installed' },
+  { id: 'codex', name: 'Codex', command: 'npx codex', available: true, note: '' },
+  { id: 'gemini', name: 'Gemini CLI', command: 'npx gemini', available: false, note: 'not installed' },
 ]
 
 const received = []
@@ -161,9 +162,9 @@ push({ kind: 'state', harness: null, sessionId: null, cwd: '', running: false, w
 await settle()
 
 const harnessChips = () => [...id('agent-harnesses').querySelectorAll('.chip')]
-check('the harness picker lists what the daemon found', harnessChips().length === 2, harnessChips().map((chip) => chip.textContent).join(' | '))
+check('the harness picker lists what the daemon found', harnessChips().length === 3, harnessChips().map((chip) => chip.textContent).join(' | '))
 check('one that is not installed cannot be picked',
-  harnessChips()[1].disabled === true && harnessChips()[1].textContent.includes('not installed'))
+  harnessChips()[2].disabled === true && harnessChips()[2].textContent.includes('not installed'))
 check('starting is refused until a harness is picked', id('agent-start').disabled === true)
 
 // A machine with nothing installed should say so, not present a row of chips
@@ -538,6 +539,36 @@ check('and says which harness and folder it belongs to',
   rows()[1].querySelector('.about').textContent)
 check('the one in use is marked', rows()[0].classList.contains('current'))
 
+// A harness that is no longer installed cannot reopen anything, and saying so
+// on the row beats failing on the click — which is exactly what happened when a
+// stale record outlived the harness that made it.
+push({
+  kind: 'sessions',
+  sessions: [
+    ...([{ id: 'ghost', harness: 'gone-harness', harnessName: 'Fake harness', cwd: '/Users/designer/work',
+      file: null, title: 'from a harness that left', updatedAt: Date.now() - 60_000 }]),
+  ],
+})
+await settle()
+const ghost = () => id('agent-history-menu').querySelector('.history-row')
+check('a conversation whose harness is gone cannot be opened',
+  ghost().classList.contains('gone') && ghost().querySelector('.history-open').disabled === true)
+check('and the row says why',
+  ghost().querySelector('.about').textContent.startsWith('Fake harness is not installed'),
+  ghost().querySelector('.about').textContent)
+check('but it can still be forgotten', ghost().querySelector('.drop') !== null)
+
+push({
+  kind: 'sessions',
+  sessions: [
+    { id: 's2', harness: 'claude', harnessName: 'Claude Code', cwd: '/Users/designer/work',
+      file: 'Bonds', title: 'make the CTA match our button', updatedAt: Date.now() - 3 * 60_000 },
+    { id: 'old', harness: 'codex', harnessName: 'Codex', cwd: '/Users/designer/checkout-app',
+      file: 'Checkout', title: 'write the sheet as a component', updatedAt: Date.now() - 26 * 3_600_000 },
+  ],
+})
+await settle()
+
 received.length = 0
 rows()[1].querySelector('.history-open').click()
 await settle()
@@ -782,6 +813,19 @@ push({ kind: 'notice', level: 'error', text: 'the harness exited' })
 await settle()
 check('a failure on the far side is shown, not swallowed',
   id('agent-log').textContent.includes('the harness exited'))
+
+// An error explaining why a session did not start has to be visible, and with
+// no session the transcript was hidden — so the answer sat behind the question.
+await agentClear()
+push({ kind: 'state', harness: null, sessionId: null, cwd: '', running: false, writes: false, auto: true, connected: true })
+await settle()
+check('with no session the chat is out of the way', id('agent-chat').hidden === true)
+push({ kind: 'notice', level: 'error', text: 'No such harness: gone-harness' })
+await settle()
+check('but a failure brings the transcript out to say so',
+  id('agent-chat').hidden === false && id('agent-log').textContent.includes('No such harness'),
+  String(id('agent-chat').hidden))
+await agentClear()
 
 id('agent-toggle-page').click()
 await settle()

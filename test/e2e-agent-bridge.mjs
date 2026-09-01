@@ -498,12 +498,23 @@ const stillTitled = await panel.wait((frame) => frame.kind === 'sessions', 'the 
 check('and a second question does not retitle it',
   stillTitled.sessions[0].title === 'what is selected', JSON.stringify(stillTitled.sessions[0].title))
 
+// Ending one changes which is current, and the panel has no other way to know.
+panel.frames.length = 0
+panel.send({ kind: 'stop' })
+await panel.wait((frame) => frame.kind === 'sessions', 'the list after ending')
+check('ending a session refreshes the history',
+  panel.find((frame) => frame.kind === 'sessions').sessions.length === 1)
+check('and keeps the conversation in it',
+  panel.find((frame) => frame.kind === 'sessions').sessions[0].id === 'fake-session-1')
+
 panel.frames.length = 0
 panel.send({ kind: 'forget', id: 'fake-session-1' })
 const forgotten = await panel.wait((frame) => frame.kind === 'sessions', 'the shorter history')
 check('one can be forgotten', forgotten.sessions.length === 0, JSON.stringify(forgotten.sessions))
 
 // -------------------------------------------------------------- resumption
+//
+// Ending and forgetting above left no session, so this section opens its own.
 //
 // A plugin's runtime can be taken away mid-conversation, so a panel that comes
 // back with the session id it stored must land in the same conversation.

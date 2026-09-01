@@ -2344,6 +2344,10 @@ button.agent-session:hover {
   font-weight: 600;
 }
 
+.history-row.gone {
+  opacity: 0.55;
+}
+
 /* Anchored to the + rather than stretched across the composer. */
 .attach-menu {
   right: auto;

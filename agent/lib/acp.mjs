@@ -318,6 +318,9 @@ export function createRunner({ plugin, log, emit, mcpServers, sessions }) {
     }
     harness = null
     announce()
+    // Ending a session changes the history — the one that was running is no
+    // longer the current one — and the panel has no other way to learn that.
+    void publishSessions()
   }
 
   /**

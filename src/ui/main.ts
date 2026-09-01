@@ -2776,6 +2776,9 @@ function agentEvent(level: string, text: string) {
   body.className = 'text'
   body.textContent = scrubBase64(text)
   block.append(rule, body)
+  // Errors are the reason a session did not start, so the transcript they land
+  // in has to be on screen even though there is no session.
+  if (agentChat.hidden) window.setTimeout(refreshAgentPage, 0)
   if (level === 'auto') {
     const undo = document.createElement('button')
     undo.type = 'button'
@@ -2832,6 +2835,8 @@ function handleAgentFrame(message: Record<string, unknown>) {
       }
       if (next.harness !== null) agentHarnessId = next.harness.id
       if (next.cwd !== '') agentCwd = next.cwd
+      // Which conversation is the current one is part of what the list shows.
+      if (!agentHistoryMenu.hidden) renderHistory()
       refreshAgentPage()
       break
     }
@@ -3025,7 +3030,7 @@ function refreshAgentStrip() {
     agentStatus === 'open'
       ? `${agentCwd === '' ? 'No project folder yet' : agentCwd} — click to change`
       : 'Connect the daemon first'
-  agentIdle.hidden = live
+  agentIdle.hidden = live || agentLog.childElementCount > 0
   const line = agentIdle.querySelector('.agent-empty-line') as HTMLParagraphElement | null
   if (line !== null) {
     // Naming the missing thing, rather than a generic invitation to start
@@ -3153,7 +3158,10 @@ function refreshAgentPage() {
   agentStopButton.disabled = !live
   agentStopButton.title = live ? '' : 'No session to end'
   agentStartButton.disabled = agentStatus !== 'open' || agentHarnessId === '' || agentCwd === ''
-  agentChat.hidden = !live
+  // A transcript with something in it is worth showing whether or not a session
+  // is running: an error explaining why one did not start lands there, and
+  // hiding it puts the answer behind the question.
+  agentChat.hidden = !live && agentLog.childElementCount === 0
   agentSendButton.disabled = !live
   agentSendButton.title = agentSession.running ? 'Queue this for when the agent finishes' : 'Send'
   agentCancelButton.hidden = !agentSession.running
@@ -3225,19 +3233,27 @@ function renderHistory() {
   }
 
   for (const record of agentSessions) {
+    // A conversation is only reopenable while the harness that owns it is still
+    // installed. Saying so on the row beats failing on the click.
+    const harness = agentHarnesses.find((entry) => entry.id === record.harness)
+    const reachable = harness !== undefined && harness.available
+
     const row = document.createElement('div')
-    row.className = `history-row${record.id === agentSession.sessionId ? ' current' : ''}`
+    row.className = `history-row${record.id === agentSession.sessionId ? ' current' : ''}${
+      reachable ? '' : ' gone'
+    }`
 
     const open = document.createElement('button')
     open.type = 'button'
     open.className = 'history-open'
+    open.disabled = !reachable
     const title = document.createElement('span')
     title.className = 'title'
     title.textContent = record.title ?? 'Untitled'
     const about = document.createElement('span')
     about.className = 'about'
     about.textContent = [
-      record.harnessName,
+      reachable ? record.harnessName : `${record.harnessName} is not installed`,
       shortDirectory(record.cwd),
       record.file ?? null,
       ago(record.updatedAt),
@@ -3245,7 +3261,9 @@ function renderHistory() {
       .filter((part) => part !== null && part !== '')
       .join(' · ')
     open.append(title, about)
-    open.title = `${record.title ?? 'Untitled'}\n${record.cwd}`
+    open.title = reachable
+      ? `${record.title ?? 'Untitled'}\n${record.cwd}`
+      : `${record.harnessName} is not on this machine any more, so this conversation cannot be reopened. Remove it with the cross.`
     open.addEventListener('click', () => {
       closeMenus()
       if (record.id === agentSession.sessionId) return
@@ -3884,9 +3902,12 @@ agentStartButton.addEventListener('click', () => {
 agentStopButton.addEventListener('click', () => {
   closeMenus()
   agentBridge.send({ kind: 'stop' })
+  // The session stays in the history; it is only no longer the one in use, and
+  // the stored id going with it is what stops the next Start silently resuming.
   agentSessionId = ''
   saveAgentSettings()
   agentLog.textContent = ''
+  agentBridge.send({ kind: 'sessions' })
 })
 
 agentCancelButton.addEventListener('click', () => agentBridge.send({ kind: 'cancel' }))
