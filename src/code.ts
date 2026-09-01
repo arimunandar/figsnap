@@ -121,14 +121,17 @@ const DEFAULT_SIZE = { width: 1180, height: 760 }
 const MINI_WIDTH = 400
 const MINI_STRIP = 44
 const MINI_PREVIEW_PADDING = 12
-const MINI_PREVIEW_MIN = 80
-const MINI_PREVIEW_MAX = 460
+// The preview never goes below square. A wide, short component scaled to the
+// panel width is only a few dozen pixels tall, which is a sliver you cannot read
+// — so the box keeps its width as a floor and centres the image in it.
+const MINI_PREVIEW_WIDTH = MINI_WIDTH - 16
+const MINI_PREVIEW_MIN = MINI_PREVIEW_WIDTH
+const MINI_PREVIEW_MAX = 520
 
 /** The preview's own height for a node, before the strip is added. */
 function miniPreviewHeight(node: SceneNode): number {
   if (node.width <= 0 || node.height <= 0) return MINI_PREVIEW_MIN
-  const inner = MINI_WIDTH - 16
-  const scaled = Math.round(inner * (node.height / node.width))
+  const scaled = Math.round(MINI_PREVIEW_WIDTH * (node.height / node.width))
   return Math.min(MINI_PREVIEW_MAX, Math.max(MINI_PREVIEW_MIN, scaled))
 }
 
