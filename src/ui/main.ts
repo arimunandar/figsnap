@@ -2805,7 +2805,6 @@ function handleAgentFrame(message: Record<string, unknown>) {
         modes: sent.modes ?? null,
         commands: sent.commands ?? [],
       }
-      const opened = next.sessionId !== null && next.sessionId !== agentSession.sessionId
       agentSession = next
       if (next.sessionId !== null && next.sessionId !== agentSessionId) {
         agentSessionId = next.sessionId
@@ -2813,7 +2812,6 @@ function handleAgentFrame(message: Record<string, unknown>) {
       }
       if (next.harness !== null) agentHarnessId = next.harness.id
       if (next.cwd !== '') agentCwd = next.cwd
-      if (opened && agentSession.running === false) agentClearLog()
       refreshAgentPage()
       break
     }
@@ -3847,6 +3845,7 @@ agentWritesToggle.addEventListener('click', () => {
 
 agentStartButton.addEventListener('click', () => {
   agentStartButton.disabled = true
+  agentLog.textContent = ''
   agentSetupNote.textContent = 'Starting the harness. A first run downloads it, which can take a few minutes.'
   agentBridge.send({
     kind: 'start',

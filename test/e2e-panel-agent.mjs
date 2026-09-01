@@ -511,6 +511,34 @@ check('opening an old one relaunches its harness, in its folder',
 check('asking the harness to replay rather than start over', sawFrame('start')?.resume === 'old')
 check('and the menu closes', id('agent-history-menu').hidden === true)
 
+// The order the daemon really sends in: the session it was on goes away, the
+// harness replays, and only then does the new session announce itself. The
+// panel used to clear on that last frame, which wiped the replay it had just
+// been given — the whole point of picking a conversation off the list.
+push({ kind: 'state', harness: null, sessionId: null, cwd: '', running: false, writes: false, auto: true, connected: true })
+await settle()
+chunk('user_message_chunk', 'write the sheet as a component')
+chunk('agent_message_chunk', 'Here is what I wrote last time.')
+await settle()
+push({
+  kind: 'state',
+  harness: { id: 'codex', name: 'Codex' },
+  sessionId: 'old',
+  cwd: '/Users/designer/checkout-app',
+  running: false,
+  writes: false,
+  auto: true,
+  connected: true,
+})
+await settle()
+check('the replayed conversation survives the session announcing itself',
+  id('agent-log').textContent.includes('Here is what I wrote last time'),
+  id('agent-log').textContent.slice(0, 80))
+check('including what was asked the first time',
+  id('agent-log').querySelector('.turn-user')?.textContent.includes('write the sheet') === true)
+
+await agentClear()
+
 id('agent-more').click()
 await settle()
 id('agent-history-open').click()
