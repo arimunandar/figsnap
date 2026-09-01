@@ -3,7 +3,7 @@ import './style.css'
 import { createBridge, type BridgeStatus } from './bridge'
 import { highlightLines } from './highlight'
 import { groups as apiGroups, curlFor, requestHeaders, type Endpoint } from '../../shared/endpoints.mjs'
-import { DEFAULT_RELAY_URL, HOSTED_RELAY_URL, LOCAL_RELAY_URL, needsAccount } from '../relays'
+import { DEFAULT_RELAY_URL, HOSTED_RELAY_URL } from '../relays'
 
 let relayUrl = DEFAULT_RELAY_URL
 let relayToken = ''
@@ -168,7 +168,6 @@ const authMessageLine = document.getElementById('auth-message') as HTMLParagraph
 const authSteps = document.getElementById('auth-steps') as HTMLOListElement
 const authBootLine = document.getElementById('auth-boot') as HTMLParagraphElement
 const authRelayLine = document.getElementById('auth-relay') as HTMLSpanElement
-const authLocalButton = document.getElementById('auth-local') as HTMLButtonElement
 const relayPage = document.getElementById('relay-page') as HTMLDivElement
 const relayPageToggle = document.getElementById('relay-toggle-page') as HTMLButtonElement
 const pageDot = document.getElementById('page-dot') as HTMLSpanElement
@@ -181,18 +180,16 @@ const pageTokenShow = document.getElementById('page-token-show') as HTMLButtonEl
 const pageTokenCopy = document.getElementById('page-token-copy') as HTMLButtonElement
 const pageSettingsStatus = document.getElementById('page-settings-status') as HTMLSpanElement
 const pageSave = document.getElementById('page-save') as HTMLButtonElement
-const pageDefaults = document.getElementById('page-defaults') as HTMLButtonElement
 const pageRelays = document.getElementById('page-relays') as HTMLDivElement
 const pageAccount = document.getElementById('page-account') as HTMLSpanElement
 const pageAccountNote = document.getElementById('page-account-note') as HTMLParagraphElement
 const pageSignIn = document.getElementById('page-signin') as HTMLButtonElement
 const pageSignOut = document.getElementById('page-signout') as HTMLButtonElement
 const pageTokenHint = document.getElementById('page-token-hint') as HTMLSpanElement
-const installerBox = document.getElementById('installer') as HTMLDivElement
-const skillLocalOnly = document.getElementById('skill-local-only') as HTMLParagraphElement
 const apiList = document.getElementById('api-list') as HTMLDivElement
 const apiNode = document.getElementById('api-node') as HTMLInputElement
 const pageHealthCommand = document.getElementById('page-cmd-health') as HTMLPreElement
+const pageSkillCommand = document.getElementById('page-cmd-skill') as HTMLPreElement
 const footbar = document.getElementById('footbar') as HTMLElement
 const relayToggle = document.getElementById('relay') as HTMLInputElement
 const relayDot = document.getElementById('relay-dot') as HTMLSpanElement
@@ -275,9 +272,8 @@ let syncTimer: number | undefined
 let syncPending: SyncState | null = null
 let syncing = false
 
-/** Only a relay with accounts has anywhere to keep it. */
 function canSync(): boolean {
-  return relayHasAccounts() && relayToken !== '' && session === 'signed-in'
+  return relayToken !== '' && session === 'signed-in'
 }
 
 function scheduleSync(state: SyncState) {
@@ -1126,7 +1122,6 @@ function setView(next: View) {
     relayPage.scrollTop = 0
     refreshRelayPage()
     refreshApi()
-    wireInstaller()
     void loadHealth()
   }
 }
@@ -1171,9 +1166,7 @@ function fact(label: string, value: string) {
 }
 
 function relayLabel(url: string): string {
-  if (url === LOCAL_RELAY_URL) return 'Local'
-  if (url === HOSTED_RELAY_URL) return 'Hosted'
-  return shortAddress(url)
+  return url === HOSTED_RELAY_URL ? 'Hosted' : shortAddress(url)
 }
 
 /**
@@ -1182,7 +1175,7 @@ function relayLabel(url: string): string {
  * offered, and an address this build does not know can be forgotten.
  */
 function renderRelayChoices() {
-  const known = [LOCAL_RELAY_URL, HOSTED_RELAY_URL]
+  const known = [HOSTED_RELAY_URL]
   const remembered = relayProfiles.map((entry) => entry.url).filter((url) => known.indexOf(url) === -1)
   const unique = [...known, ...remembered].filter((url, index, all) => all.indexOf(url) === index)
 
@@ -1191,7 +1184,7 @@ function renderRelayChoices() {
     const current = url === relayUrl
     const chip = document.createElement('button')
     chip.type = 'button'
-    chip.className = `installer-dir${current ? ' current' : ''}`
+    chip.className = `chip${current ? ' current' : ''}`
     chip.title = url
     chip.disabled = current
 
@@ -1210,9 +1203,8 @@ function renderRelayChoices() {
         pageUrl.value = url
         pageToken.value = ''
         pageSettingsStatus.className = 'subtitle'
-        pageSettingsStatus.textContent = needsAccount(url)
-          ? 'Save and reconnect, then sign in — the plugin asks for an account on a hosted relay.'
-          : 'Save and reconnect to use the local relay.'
+        pageSettingsStatus.textContent =
+          'Save and reconnect, then sign in — every relay has accounts.'
       })
     }
 
@@ -1234,8 +1226,6 @@ function renderRelayChoices() {
 }
 
 function refreshRelayPage() {
-  const hosted = relayHasAccounts()
-
   pageDot.className = `dot ${relayState}`
   pageState.textContent = STATE_TEXT[relayState]
   pageUrl.value = relayUrl
@@ -1246,35 +1236,28 @@ function refreshRelayPage() {
   pageTokenShow.disabled = relayToken === ''
   pageTokenCopy.disabled = relayToken === ''
   pageSettingsStatus.className = 'subtitle'
-  pageSettingsStatus.textContent =
-    relayToken === '' && hosted ? 'This relay needs an account. Press Sign in above.' : ''
+  pageSettingsStatus.textContent = relayToken === '' ? 'This relay needs an account. Press Sign in above.' : ''
 
-  // A local relay has no accounts, so the whole card is about a hosted one.
-  const signedIn = hosted && relayToken !== ''
-  pageAccount.textContent = signedIn ? relayEmail || 'signed in' : hosted ? 'not signed in' : 'no account needed'
+  const signedIn = relayToken !== ''
+  pageAccount.textContent = signedIn ? relayEmail || 'signed in' : 'not signed in'
   pageSignOut.hidden = !signedIn
-  pageSignIn.hidden = !hosted
   pageSignIn.textContent = signedIn ? 'Switch account' : 'Sign in'
-  pageAccountNote.textContent = hosted
-    ? signedIn
-      ? 'Each account gets its own room, so this token reaches your designs and nobody else\u2019s.'
-      : 'Email and password, typed here. The relay answers with a token and the plugin stores it.'
-    : 'A local relay binds to 127.0.0.1, so it asks for nothing.'
+  pageAccountNote.textContent = signedIn
+    ? 'Each account gets its own room, so this token reaches your designs and nobody else\u2019s, and your saved set follows you between machines.'
+    : 'Email and password, typed here. The relay answers with a token and the plugin stores it.'
 
   renderRelayChoices()
 
   // The field is only for a token obtained elsewhere; signing in is the normal path.
-  pageTokenHint.textContent = hosted
-    ? 'Set by signing in above. Paste one here only if you already have it.'
-    : 'A local relay has no accounts, so it needs no token.'
-
-  // Writing files needs a filesystem, which a Worker does not have: /fs and
-  // /skill/install answer 501 there, so the browser is not offered at all.
-  installerBox.hidden = hosted
-  skillLocalOnly.hidden = !hosted
+  pageTokenHint.textContent = 'Set by signing in above. Paste one here only if you already have it.'
 
   // Samples are built from the address in use, so they are always runnable.
   pageHealthCommand.textContent = `curl -s ${httpBase()}/health`
+  pageSkillCommand.textContent = [
+    'mkdir -p .claude/skills/figsnap .claude/agents',
+    `curl -s ${httpBase()}/skill/SKILL.md > .claude/skills/figsnap/SKILL.md`,
+    `curl -s ${httpBase()}/skill/figsnap-extractor.md > .claude/agents/figsnap-extractor.md`,
+  ].join('\n')
 
   pageFacts.textContent = ''
   fact('Socket', relayUrl)
@@ -1282,9 +1265,7 @@ function refreshRelayPage() {
   fact(
     'Token',
     relayToken === ''
-      ? hosted
-        ? 'none — this relay needs one'
-        : 'none, not needed'
+      ? 'none — this relay needs one'
       : relayState === 'open'
         ? 'set, sent with every request'
         : 'set',
@@ -1348,7 +1329,6 @@ function saveRelaySettings(url: string, token: string) {
 pageSave.addEventListener('click', () =>
   saveRelaySettings(pageUrl.value.trim() || DEFAULT_RELAY_URL, pageToken.value.trim()),
 )
-pageDefaults.addEventListener('click', () => saveRelaySettings(LOCAL_RELAY_URL, ''))
 // ----------------------------------------------------------------- accounts
 //
 // A hosted relay has accounts; signing in happens here rather than in a browser,
@@ -1356,7 +1336,7 @@ pageDefaults.addEventListener('click', () => saveRelaySettings(LOCAL_RELAY_URL, 
 // password is posted to the relay over HTTPS and never stored — only the token
 // it returns is, in clientStorage, which is per user and outside the project.
 
-type SessionState = 'unknown' | 'signed-out' | 'signed-in' | 'open-relay'
+type SessionState = 'unknown' | 'signed-out' | 'signed-in'
 type StepState = 'idle' | 'pending' | 'done' | 'failed'
 
 const STEP_LABELS = ['Account', 'Relay socket', 'HTTP API']
@@ -1368,28 +1348,6 @@ const READY_TIMEOUT_MS = 20_000
 let session: SessionState = 'unknown'
 let authMode: 'login' | 'register' = 'login'
 let authBusy = false
-
-// Whether the relay in use has accounts. The address is a good guess — a
-// deployed relay is `wss://`, a local one is not — but only the relay knows, and
-// a remote one reached over plain `ws://` would be guessed wrong.
-let relayAccounts: 'unknown' | 'yes' | 'no' = 'unknown'
-
-function relayHasAccounts(): boolean {
-  return relayAccounts === 'yes' || (relayAccounts === 'unknown' && needsAccount(relayUrl))
-}
-
-/** `hosted` is the hosted relay's own word for "this one has accounts". */
-async function probeAccounts(): Promise<'yes' | 'no' | 'unknown'> {
-  try {
-    const response = await fetch(`${httpBase()}/health`)
-    if (!response.ok) return 'unknown'
-    const data = (await response.json()) as { hosted?: unknown }
-    return data.hosted === true ? 'yes' : 'no'
-  } catch {
-    // Not running yet, or blocked by the manifest. Either way, not an answer.
-    return 'unknown'
-  }
-}
 
 function authMessage(text: string, tone: 'plain' | 'good' | 'bad' = 'plain') {
   authMessageLine.textContent = text
@@ -1432,7 +1390,6 @@ function setAuthMode(next: 'login' | 'register') {
 
 function refreshAuthPage() {
   authRelayLine.textContent = `Relay: ${shortAddress(relayUrl)}`
-  authLocalButton.hidden = relayUrl === LOCAL_RELAY_URL
   // The boot line stands in for the form until the stored settings have been
   // read; after that the form is the page.
   authForm.hidden = !settingsLoaded
@@ -1445,9 +1402,7 @@ function refreshAuthPage() {
  * relay has already refused.
  */
 function sessionExpired(reason: string) {
-  // A relay known to have no accounts cannot be signed into, so a refusal there
-  // is a misconfigured token rather than a session to renew.
-  if (session === 'signed-out' || relayAccounts === 'no') return
+  if (session === 'signed-out') return
   session = 'signed-out'
   relayToken = ''
   relayEmail = ''
@@ -1474,14 +1429,8 @@ async function verifySession(): Promise<void> {
     }
     if (!response.ok) return
 
-    // A token this relay recognises is proof that it has accounts — better proof
-    // than the address, which only ever was a guess. Without this a hosted relay
-    // reached over plain ws:// would look account-less to everything that asks.
-    if (relayAccounts !== 'yes') {
-      relayAccounts = 'yes'
-      if (view === 'relay') refreshRelayPage()
-      if (syncPending) scheduleSync(syncPending)
-    }
+    // Confirmed session: anything that was waiting on one can go now.
+    if (syncPending) scheduleSync(syncPending)
 
     const account = (await response.json()) as { email?: string }
     if (typeof account.email === 'string' && account.email !== relayEmail) {
@@ -1640,12 +1589,6 @@ authForm.addEventListener('submit', (event) => {
   void submitAuth()
 })
 
-// The escape hatch from the gate: a local relay has no accounts to sign in to.
-authLocalButton.addEventListener('click', () => {
-  authMessage('Pointing at the local relay. Start it with npm run relay.')
-  post({ type: 'save-settings', url: LOCAL_RELAY_URL, token: '', email: '' })
-})
-
 pageSignIn.addEventListener('click', () => {
   setAuthMode('login')
   authSteps.hidden = true
@@ -1661,10 +1604,6 @@ pageSignOut.addEventListener('click', () => void signOut())
  * the plugin, signing in and switching relays all behave the same way.
  */
 function applySettings(first: boolean, changed: boolean) {
-  // A new address is a new relay; what the last one said about accounts does not
-  // carry over, so it goes back to the guess the address supports.
-  if (first || changed) relayAccounts = needsAccount(relayUrl) ? 'yes' : 'unknown'
-
   if (relayToken !== '') {
     // A stored token is trusted enough to connect on: the socket and /auth/me
     // both report a bad one, and the fast path is worth more than a round trip.
@@ -1679,13 +1618,9 @@ function applySettings(first: boolean, changed: boolean) {
     return
   }
 
-  // No credential. A relay with accounts means the gate; one without means there
-  // is nothing to ask for, so connect straight away.
-  if (relayAccounts === 'yes') {
-    openGate()
-    return
-  }
-  if (first || changed) void decideWithoutToken(first)
+  // No credential, and every relay here has accounts: the gate is the only
+  // sensible view.
+  openGate()
 }
 
 function connect(first: boolean) {
@@ -1700,23 +1635,6 @@ function openGate() {
     bridge.disconnect()
   }
   setView('auth')
-}
-
-/** Only the relay knows whether it has accounts, so a tokenless one is asked. */
-async function decideWithoutToken(first: boolean) {
-  const stateWhenAsked = relayUrl
-  const answer = await probeAccounts()
-  // The answer describes the relay we asked, and only while it is still tokenless.
-  if (relayUrl !== stateWhenAsked || relayToken !== '') return
-  relayAccounts = answer
-  if (answer === 'yes') {
-    openGate()
-    return
-  }
-  session = 'open-relay'
-  connect(first)
-  if (view === 'auth') setView('work')
-  if (view === 'relay') refreshRelayPage()
 }
 
 // ------------------------------------------------------------- api browser
@@ -2040,136 +1958,6 @@ relayPage.addEventListener('click', async (event) => {
   pageSettingsStatus.className = copied ? 'ok-text' : 'bad-text'
   pageSettingsStatus.textContent = copied ? 'Copied.' : 'Copy blocked — select the text instead.'
 })
-
-// ---------------------------------------------------------------- installer
-//
-// The panel cannot touch the filesystem, so browsing and writing both go through
-// the relay. Only directories are listed, which is all that choosing a project
-// root needs.
-
-type FsListing = {
-  path: string
-  parent: string | null
-  home: string
-  directories: string[]
-  isProject: boolean
-  hasSkill: boolean
-}
-
-let browsePath = ''
-// The markup is static now, so wiring twice would double every listener.
-let installerWired = false
-
-function wireInstaller() {
-  if (installerWired) return
-  const maybePathInput = document.getElementById('skill-path') as HTMLInputElement | null
-  if (!maybePathInput) return
-  installerWired = true
-  const pathInput = maybePathInput
-  const upButton = document.getElementById('skill-up') as HTMLButtonElement
-  const goButton = document.getElementById('skill-go') as HTMLButtonElement
-  const dirsBox = document.getElementById('skill-dirs') as HTMLDivElement
-  const statusLine = document.getElementById('skill-status') as HTMLSpanElement
-  const installButton = document.getElementById('skill-install') as HTMLButtonElement
-
-  let listing: FsListing | null = null
-
-  function say(text: string, tone: 'plain' | 'good' | 'bad' = 'plain') {
-    statusLine.textContent = text
-    statusLine.className = tone === 'good' ? 'ok-text' : tone === 'bad' ? 'bad-text' : 'subtitle'
-  }
-
-  async function browse(path: string) {
-    say('Reading…')
-    try {
-      const response = await fetch(`${httpBase()}/fs?path=${encodeURIComponent(path)}`, {
-        headers: authHeaders(),
-      })
-      if (response.status === 401) {
-        say('The relay rejected the token.', 'bad')
-        sessionExpired('The relay rejected that token. Sign in again.')
-        return
-      }
-      const data = (await response.json()) as FsListing & { error?: string }
-      if (data.error) {
-        say(data.error, 'bad')
-        return
-      }
-      listing = data
-      browsePath = data.path
-      pathInput.value = data.path
-      upButton.disabled = data.parent === null
-      dirsBox.textContent = ''
-      for (const name of data.directories) {
-        const row = document.createElement('button')
-        row.type = 'button'
-        row.className = 'installer-dir'
-        row.textContent = name
-        row.addEventListener('click', () => browse(`${data.path}/${name}`))
-        dirsBox.appendChild(row)
-      }
-      if (data.directories.length === 0) {
-        const empty = document.createElement('p')
-        empty.className = 'placeholder pad'
-        empty.textContent = 'No sub-directories here.'
-        dirsBox.appendChild(empty)
-      }
-      const marks: string[] = []
-      if (data.isProject) marks.push('looks like a project')
-      if (data.hasSkill) marks.push('already has a .claude directory')
-      say(marks.length > 0 ? `${marks.join(', ')}.` : 'Choose the project to install into.')
-    } catch (error) {
-      say(`Could not read that path: ${error instanceof Error ? error.message : String(error)}`, 'bad')
-    }
-  }
-
-  async function install(force: boolean) {
-    if (!listing) return
-    installButton.disabled = true
-    say(force ? 'Overwriting…' : 'Installing…')
-    try {
-      const response = await fetch(`${httpBase()}/skill/install`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ directory: browsePath, force }),
-      })
-      const data = (await response.json()) as {
-        written?: string[]
-        existing?: string[]
-        error?: string
-        directory?: string
-      }
-      if (response.status === 409) {
-        say(`Already installed here (${(data.existing ?? []).join(', ')}). Press again to overwrite.`, 'bad')
-        installButton.textContent = 'Overwrite'
-        installButton.onclick = () => install(true)
-        return
-      }
-      if (!response.ok || data.error) {
-        say(data.error ?? `Install failed (${response.status})`, 'bad')
-        return
-      }
-      say(`Installed ${(data.written ?? []).length} files into ${data.directory}.`, 'good')
-      installButton.textContent = 'Install here'
-      installButton.onclick = () => install(false)
-    } catch (error) {
-      say(`Install failed: ${error instanceof Error ? error.message : String(error)}`, 'bad')
-    } finally {
-      installButton.disabled = false
-    }
-  }
-
-  upButton.addEventListener('click', () => {
-    if (listing?.parent) browse(listing.parent)
-  })
-  goButton.addEventListener('click', () => browse(pathInput.value.trim()))
-  pathInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') browse(pathInput.value.trim())
-  })
-  installButton.addEventListener('click', () => install(false))
-
-  browse(browsePath)
-}
 
 window.addEventListener('keydown', (event: KeyboardEvent) => {
   // Escape leaves a page, but there is nothing behind the gate to leave to.

@@ -43,9 +43,13 @@ const check = (n, ok, d='') => { out.push(ok); console.log(`${ok ? 'PASS' : 'FAI
 check('no token -> 401', (await fetch(`${BASE}/tree`)).status === 401)
 check('bad token -> 401', (await fetch(`${BASE}/tree`, { headers: { 'x-relay-token': 'nope' } })).status === 401)
 check('no plugin -> 503', (await fetch(`${BASE}/tree`, { headers: H })).status === 503)
-check('/fs is local-only -> 501', (await fetch(`${BASE}/fs`, { headers: H })).status === 501)
-check('/skill/install is local-only -> 501',
-  (await fetch(`${BASE}/skill/install`, { method: 'POST', headers: H, body: '{}' })).status === 501)
+// The filesystem routes went with the local relay; they are not 501 stubs, they
+// are simply not there.
+check('the filesystem routes are gone', (await fetch(`${BASE}/fs`, { headers: H })).status === 404)
+// A POST to a path that no longer exists is refused by the method check before
+// it reaches the route list, so 405 rather than 404 — either way, it is gone.
+check('including the installer',
+  (await fetch(`${BASE}/skill/install`, { method: 'POST', headers: H, body: '{}' })).status === 405)
 check('docs stay public', (await fetch(`${BASE}/docs.md`)).status === 200)
 
 // A fake plugin dials in, exactly as the real one does.
@@ -104,7 +108,8 @@ const skill = await (await fetch(`${BASE}/skill`)).json()
 check('skill files served publicly', skill.files?.length === 2)
 check('single skill file route', (await (await fetch(`${BASE}/skill/SKILL.md`)).text()).startsWith('---'))
 const missing = await (await fetch(`${BASE}/nope`)).json()
-check('404 lists the real routes', missing.routes.includes('/extract') && missing.note.includes('local-only'))
+check('404 lists the real routes',
+  missing.routes.includes('/extract') && missing.routes.includes('/library'))
 
 socket.close()
 await new Promise(r => setTimeout(r, 500))

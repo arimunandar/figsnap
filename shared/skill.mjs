@@ -7,7 +7,7 @@
 export function skillFiles({ httpBase }) {
   const skill = `---
 name: figsnap
-description: Read designs out of the open Figma file - PNG renders, React components, CSS, and Figma's own CSS - through a local relay. Use when the user pastes a figma.com link, names a Figma frame or component, asks to implement/port/build a design as code, asks what a screen looks like, or asks to compare code against a design. Also use when the user mentions the Figsnap plugin or a Figma relay.
+description: Read designs out of the open Figma file - PNG renders, React components, HTML, CSS, and Figma's own CSS - through the Figsnap relay. Use when the user pastes a figma.com link, names a Figma frame or component, asks to implement/port/build a design as code, asks what a screen looks like, or asks to compare code against a design. Also use when the user mentions the Figsnap plugin or a Figma relay.
 ---
 
 # Reading designs out of Figma
@@ -19,9 +19,9 @@ export, and only the file that is currently open.
 
 Base URL: \`${httpBase}\`
 
-The relay may be local or hosted on Cloudflare. If it is hosted it requires a
-token on every request, and \`/fs\` and \`/skill/install\` answer \`501\` because a
-Worker has no filesystem.
+The relay is a Cloudflare Worker the designer signs into from the plugin. Every
+route that touches a design needs their token; \`/health\`, \`/docs.md\` and
+\`/skill\` do not.
 
 ## Always start here
 
@@ -32,12 +32,14 @@ curl -s ${httpBase}/health
 \`pluginConnected: true\` means you can read the design. Anything else and you
 must stop and tell the user what to fix, rather than guessing at the design:
 
-- Connection refused: the relay is not running. The user starts it with
-  \`npm run relay\` in the plugin's project directory.
-- \`pluginConnected: false\`: the relay is up but the Figma plugin is closed. The
-  user opens it from Plugins > Development > Figsnap.
-- \`401\`: a token is set. Send it as \`-H "x-relay-token: $RELAY_TOKEN"\` on every
-  request. Ask the user for the value; never guess.
+- \`pluginConnected: false\`: the relay is up but the Figma plugin is closed, or
+  signed in as someone else. The user opens it from Plugins > Development >
+  Figsnap and signs in.
+- \`401\`: send the token as \`-H "x-relay-token: $RELAY_TOKEN"\` on every request.
+  Ask the user for it — the Relay page in the plugin has a copy button. Never
+  guess, and never put it in a URL you log.
+- Connection refused or a DNS failure: the relay address is wrong. Ask; do not
+  try other hosts.
 
 The full manual is \`curl -s ${httpBase}/docs.md\` — read it when something here
 is not enough.
@@ -162,7 +164,7 @@ agent instead of pulling every response into this conversation.
 
   const agent = `---
 name: figsnap-extractor
-description: Pulls designs out of the open Figma file through the local relay and reports back a compact summary. Use when several nodes are needed, when only structure or measurements matter, or when full extractions would crowd the conversation. Give it node ids, Figma links, or "the current selection".
+description: Pulls designs out of the open Figma file through the Figsnap relay and reports back a compact summary. Use when several nodes are needed, when only structure or measurements matter, or when full extractions would crowd the conversation. Give it node ids, Figma links, or "the current selection".
 tools: Bash, Read, Write
 ---
 

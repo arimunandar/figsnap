@@ -1,14 +1,15 @@
 // A running Figsnap plugin, for suites that want to exercise the real one.
 //
 // dist/code.js is the shipped main thread. Here it runs against a stand-in for
-// the figma API and is wired to a real relay through the same socket protocol
-// the panel speaks, so everything between an HTTP request and the plugin's
-// answer is the code that ships — only Figma itself is faked.
+// the figma API and is wired to the shared relay through the same socket
+// protocol the panel speaks, so everything between an HTTP request and the
+// plugin's answer is the code that ships — only Figma itself is faked.
 
-import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+
+import { requireRelay, account } from './relay.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -98,8 +99,10 @@ function index(nodes, into = new Map()) {
  * Starts a relay, loads the plugin against it, and returns the pieces a suite
  * needs: the fake figma to poke, and helpers to call the relay over HTTP.
  */
-export async function startPlugin({ port, pageChildren = [], offPage = [] }) {
-  const base = `http://127.0.0.1:${port}`
+export async function startPlugin({ pageChildren = [], offPage = [], label = 'plugin' } = {}) {
+  // Its own account, so this plugin gets a room nothing else is writing to.
+  const base = requireRelay(label)
+  const { token, headers } = await account(base, label)
   const storage = new Map()
   // offPage nodes are reachable by id but are not on the current page, which is
   // how a fixture can be extracted without disturbing what /tree returns.
@@ -142,21 +145,7 @@ export async function startPlugin({ port, pageChildren = [], offPage = [] }) {
   const bundle = await readFile(join(root, 'dist/code.js'), 'utf8')
   new Function('figma', '__html__', bundle)(figma, '<html></html>')
 
-  const relay = spawn('node', [join(root, 'server/relay.mjs')], {
-    env: { ...process.env, RELAY_PORT: String(port) },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  relay.stderr.on('data', (data) => console.error('[relay]', String(data).trim()))
-  for (let attempt = 0; attempt < 60; attempt++) {
-    try {
-      await fetch(`${base}/health`)
-      break
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
-  }
-
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/plugin`)
+  const socket = new WebSocket(`${base.replace(/^http/, 'ws')}/plugin?token=${encodeURIComponent(token)}`)
   await new Promise((resolve, reject) => {
     socket.addEventListener('open', resolve)
     socket.addEventListener('error', reject)
@@ -200,17 +189,18 @@ export async function startPlugin({ port, pageChildren = [], offPage = [] }) {
     storage,
     nodes,
     base,
+    token,
+    headers,
     toMain,
-    get: (path) => fetch(`${base}${path}`).then((response) => response.json()),
+    get: (path) => fetch(`${base}${path}`, { headers }).then((response) => response.json()),
     body: (method, path, payload) =>
       fetch(`${base}${path}`, {
         method,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...headers },
         body: JSON.stringify(payload),
       }).then(async (response) => ({ status: response.status, data: await response.json() })),
     stop() {
       socket.close()
-      relay.kill()
     },
   }
 }

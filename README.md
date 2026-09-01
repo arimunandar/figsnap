@@ -143,31 +143,16 @@ re-run the last plugin.
 That is the whole setup for the panel. The relay below is only needed if you want
 the HTTP API.
 
-## Running the relay
+## The relay
 
-```bash
-npm run relay
-```
+The relay is a Cloudflare Worker. There is nothing to run: the plugin connects to
+it on open, and the **Relay** page shows the live connection, what the relay
+itself reports, the address and token, an API browser and the commands to install
+the Claude Code skill.
 
-It listens on `127.0.0.1:3055`. The plugin connects on open — the **Relay**
-checkbox and status dot in the panel show the state, and it retries with backoff
-while the relay is down.
-
-Two environment variables:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `RELAY_PORT` | `3055` | the port to listen on |
-| `RELAY_TOKEN` | *(none)* | require a token on every request |
-
-```bash
-RELAY_TOKEN=$(openssl rand -hex 16) npm run relay
-```
-
-Without a token, **any process on your machine** can read the open Figma file
-through the relay, browse directories, and write `.claude` files into a project.
-That is contained — the relay never leaves `127.0.0.1` — but set a token before
-using this for anything beyond local experimenting.
+A Durable Object holds the plugin's WebSocket, because a Worker cannot hold a
+socket between requests. One object per account, so a token reaches the designs
+of the plugin signed in as that same account and nobody else's.
 
 ### Signing in
 
@@ -186,9 +171,8 @@ the form comes back with *That session has expired* instead of the socket
 retrying forever. **Sign out** on the Relay page revokes the token on the relay
 and drops it here.
 
-Only a hosted relay (`wss://`) has accounts. A local one binds to `127.0.0.1`, so
-it asks for nothing and the gate does not appear; **Use a local relay** on the
-form switches to it.
+Every relay has accounts, so the plugin always opens on this form until a
+session is stored.
 
 The relay also serves `/login` as an ordinary web page, which is the better place
 to type a password if you want a password manager to fill it. Its pairing flow —
@@ -215,20 +199,17 @@ list is generated from `shared/endpoints.mjs`, the same file the relay's own
 
 ### Pointing the plugin at a relay
 
-The panel has a **Relay** page, next to Docs. It shows the live connection state,
-what the relay itself reports (whether it can see the plugin, whether a token is
-required, requests in flight, cached images), the address and token fields, and
-the commands to start the relay with a copy button on each.
+The **Relay** page holds the account, the live connection, what the relay itself
+reports, the address and token, the API browser and the skill install commands.
 
 Settings are stored per user, so nothing needs recompiling and nothing is
-committed. Each address remembers its own token, so switching between a local and
-a hosted relay is one click. A fresh install defaults to the hosted relay in
-`src/relays.ts`; the local default is `ws://localhost:3055/plugin` with no token.
+committed. Each address remembers its own token, so moving between deployments is
+a click. A fresh install points at the address in `src/relays.ts`.
 
 One catch that is not the plugin's doing: **Figma blocks any address the manifest
-does not list.** `manifest.json` allows port 3055 out of the box. A different port
-means editing `networkAccess.devAllowedDomains` and re-importing the plugin, since
-Figma caches the manifest.
+does not list.** A relay of your own means adding its exact host to
+`networkAccess.devAllowedDomains` in `manifest.json` and re-importing the plugin,
+since Figma caches the manifest.
 
 ## Develop
 
@@ -243,9 +224,10 @@ Figma picks up each rebuild. Manifest changes still need a re-import.
 
 ### Tests
 
-`npm test` runs the suites in `test/`. Each one starts its own relay on its own
-port with a fake plugin on the other end, so they need no Figma, no network access
-and no shared state. `e2e-panel-auth.mjs` goes further and runs the shipped
+`npm test` starts one `wrangler dev` and runs the suites in `test/` against it.
+Each suite registers its own account, which puts it in its own room, so they need
+no Figma, no network beyond localhost, and no shared state — and they run in any
+order. A suite that finds no relay skips rather than fails. `e2e-panel-auth.mjs` goes further and runs the shipped
 `dist/ui.html` in jsdom against a relay in real `workerd`, with a stand-in for the
 main thread, so the sign-in flow is tested as the panel actually performs it —
 run `npm run build` first, since it reads the built file:
@@ -264,6 +246,7 @@ run `npm run build` first, since it reads the built file:
 | `e2e-folders.mjs` | the real `dist/code.js` behind a relay: the saved store, folders, migration |
 | `e2e-panel-folders.mjs` | the Saved pane's folder UI in the built panel |
 | `e2e-panel-minimise.mjs` | minimising: what hides, what the main thread is told, what keeps working |
+| `e2e-skill.mjs` | the Claude Code skill files as the relay serves them |
 | `e2e-tree.mjs` | `?depth=` walks and the `format` picker, on the real main thread |
 
 `npm test` never touches the network. To check a relay you have actually deployed:
@@ -279,29 +262,15 @@ stays out of version control.
 
 ## Sharing it with other people
 
-The panel needs no relay: preview, React, Module CSS, CSS, Figma CSS, saved sets
-and links all run inside Figma with no network access at all. Only the HTTP API
-needs a process running. That splits the audience:
+The panel needs no relay for most of what it does: preview, React, HTML, the
+three CSS flavours, saved sets and links all run inside Figma. The relay is what
+an agent talks to, and what carries a saved set between machines.
 
 | Audience | Needs | Gets it from |
 | --- | --- | --- |
 | Designers who want code out of Figma | the panel | the published plugin — one click, no Node |
-| Developers and agents | panel + HTTP API | the plugin, plus one command for the relay |
+| Developers and agents | panel + HTTP API | the plugin, and an account on the relay |
 | Contributors | the source | this repository |
-
-### The relay without cloning
-
-`server/relay.mjs` is an executable with no build step, so once this package is
-published it runs straight from npm:
-
-```bash
-npx figsnap-relay          # add RELAY_TOKEN / RELAY_PORT as needed
-```
-
-The package is still marked `private`, so publishing is a deliberate act, not
-something `npm publish` will do by accident. Only `server/`, `shared/`,
-`worker/`, `manifest.json` and this README are packed — around 70 kB, no plugin
-build output.
 
 ## Publishing the plugin
 
@@ -352,11 +321,11 @@ Three differences from running it locally:
 
 - **A token is mandatory**, and normally comes from an account: sign in from the
   plugin, or at `/login`. Without one the API answers `401` and only the docs are
-  readable — on a public address there is no `127.0.0.1` to hide behind. A shared
-  `RELAY_TOKEN` secret still works for a single-room deployment.
-- **`/fs` and `/skill/install` answer `501`.** A Worker has no filesystem, so
-  browsing directories and installing the skill stay local. Fetch `/skill` and
-  write the files yourself, or run the local relay for that.
+  readable. A shared `RELAY_TOKEN` secret still works for a single-room
+  deployment, but accounts are the normal path.
+- **The relay cannot write files.** A Worker has no filesystem, so installing the
+  Claude Code skill is two `curl` commands into your project — the Relay page
+  prints them with the address filled in.
 - **`manifest.json` must list the address.** Add
   `wss://<name>.<subdomain>.workers.dev` to `networkAccess.devAllowedDomains`
   (or `allowedDomains` for a published plugin) and re-import the plugin. List the
@@ -390,12 +359,22 @@ The main thread and the UI run in separate sandboxes and exchange messages:
 
 ## Sending nodes to an AI agent
 
+The examples below use two shell variables: `RELAY` is your relay's address, and
+`RELAY_TOKEN` is the token the plugin's Relay page will copy for you.
+
+```bash
+export RELAY=https://your-relay.workers.dev
+export RELAY_TOKEN=...        # Relay page > Token > copy
+```
+
+Every route that touches a design needs the token, as `-H "x-relay-token: $RELAY_TOKEN"`.
+
 The plugin cannot be reached from outside Figma and cannot host a server, so it
 dials out instead. `server/relay.mjs` holds that WebSocket and exposes a plain
 HTTP API, which is what an agent talks to:
 
 ```
-AI agent  --REST/SSE-->  relay (127.0.0.1:3055)  <--WS--  Figma plugin UI
+AI agent  --REST/SSE-->  relay (Cloudflare Worker)  <--WS--  Figma plugin UI
 ```
 
 WebSocket is the transport between plugin and relay because the agent needs to
@@ -447,20 +426,20 @@ the root; the next write is in the new shape.
 Agents get the same set:
 
 ```bash
-curl -s localhost:3055/saved                       # what is in the set
+curl -s $RELAY/saved                       # what is in the set
 
-curl -s -X POST localhost:3055/saved \
+curl -s -X POST $RELAY/saved \
   -H 'content-type: application/json' -d '{"selection":true}'
 
-curl -s -X POST localhost:3055/saved \
+curl -s -X POST $RELAY/saved \
   -H 'content-type: application/json' -d '{"nodeIds":["21:10314"]}'
 
-curl -s -X POST localhost:3055/extract \
+curl -s -X POST $RELAY/extract \
   -H 'content-type: application/json' -d '{"saved":true}'
 
-curl -s -X DELETE localhost:3055/saved \
+curl -s -X DELETE $RELAY/saved \
   -H 'content-type: application/json' -d '{"nodeIds":["21:10314"]}'
-curl -s -X DELETE localhost:3055/saved \
+curl -s -X DELETE $RELAY/saved \
   -H 'content-type: application/json' -d '{"all":true}'
 ```
 
@@ -529,11 +508,11 @@ whether either limit bit.
 
 ```bash
 # whatever the designer has selected right now
-curl -s -X POST localhost:3055/extract -H 'content-type: application/json' \
+curl -s -X POST $RELAY/extract -H 'content-type: application/json' \
   -d '{"selection":true}'
 
 # a known set of ids
-curl -s -X POST localhost:3055/extract -H 'content-type: application/json' \
+curl -s -X POST $RELAY/extract -H 'content-type: application/json' \
   -d '{"nodeIds":["21:10314","21:10384"],"scale":1}'
 ```
 
@@ -553,15 +532,15 @@ links all parse.
 
 ```bash
 # one link
-curl -s -X POST localhost:3055/extract -H 'content-type: application/json' \
+curl -s -X POST $RELAY/extract -H 'content-type: application/json' \
   -d '{"url":"https://www.figma.com/design/KEY/Name?node-id=21-10314"}'
 
 # many links: an array, or one blob of text with links in it
-curl -s -X POST localhost:3055/extract -H 'content-type: application/json' \
+curl -s -X POST $RELAY/extract -H 'content-type: application/json' \
   -d '{"urls":["https://…?node-id=21-10314","https://…?node-id=21-10384"]}'
 
 # what do these links point at? (no export, much faster)
-curl -s -X POST localhost:3055/resolve -H 'content-type: application/json' \
+curl -s -X POST $RELAY/resolve -H 'content-type: application/json' \
   -d '{"urls":"…paste anything containing figma links…"}'
 ```
 
@@ -614,11 +593,11 @@ Fetching it renders the node again through the live socket: nothing is cached, s
 the URL works only while the plugin is connected.
 
 ```bash
-curl -H "x-relay-token: $RELAY_TOKEN" localhost:3055/tree
+curl -H "x-relay-token: $RELAY_TOKEN" $RELAY/tree
 
-curl -X POST localhost:3055/extract \
+curl -X POST $RELAY/extract \
   -H "x-relay-token: $RELAY_TOKEN" -H 'content-type: application/json' \
   -d '{"nodeId":"1:23","scale":2}'
 
-curl -N -H "x-relay-token: $RELAY_TOKEN" localhost:3055/events
+curl -N -H "x-relay-token: $RELAY_TOKEN" $RELAY/events
 ```

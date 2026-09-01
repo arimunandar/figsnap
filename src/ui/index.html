@@ -63,7 +63,6 @@
         <div class="auth-foot">
           <span class="subtitle" id="auth-relay"></span>
           <span class="spacer"></span>
-          <button class="button secondary" type="button" id="auth-local">Use a local relay</button>
         </div>
       </div>
     </div>
@@ -214,11 +213,11 @@
           <div class="card-row">
             <label class="settings-label" for="page-url">Address</label>
             <input class="text-input" type="text" id="page-url" spellcheck="false"
-              autocomplete="off" placeholder="ws://localhost:3055/plugin" />
+              autocomplete="off" placeholder="wss://your-relay.workers.dev/plugin" />
           </div>
           <div class="card-row">
             <span class="settings-label">Relay</span>
-            <div class="installer-dirs" id="page-relays"></div>
+            <div class="chips" id="page-relays"></div>
           </div>
           <div class="card-row">
             <label class="settings-label" for="page-token">Token</label>
@@ -236,7 +235,6 @@
           <div class="card-row">
             <span class="subtitle" id="page-settings-status"></span>
             <span class="spacer"></span>
-            <button class="button secondary" type="button" id="page-defaults">Local relay</button>
             <button class="button primary" type="button" id="page-save">Save and reconnect</button>
           </div>
         </div>
@@ -260,84 +258,36 @@
 
         <h2>Claude Code skill</h2>
         <p>
-          Writes <code>.claude/skills/figsnap/SKILL.md</code> into a project,
-          along with a <code>figsnap-extractor</code> agent that pulls several
-          nodes and reports a summary rather than tens of kilobytes of CSS. The
-          relay address is baked into the files, so they are generated per
-          install rather than copied. An existing install is never overwritten
-          silently — press again to replace it.
-        </p>
-        <p class="subtitle" id="skill-local-only">
-          Writing files needs a filesystem, so this works only against a relay
-          running on your own machine.
-        </p>
-        <div class="installer" id="installer">
-          <div class="installer-bar">
-            <button class="button icon" type="button" id="skill-up" title="Parent directory">&#8593;</button>
-            <input class="text-input" type="text" id="skill-path" spellcheck="false" autocomplete="off" />
-            <button class="button secondary" type="button" id="skill-go">Open</button>
-          </div>
-          <div class="installer-dirs" id="skill-dirs"></div>
-          <div class="installer-bar">
-            <span class="subtitle" id="skill-status">Choose the project to install into.</span>
-            <span class="spacer"></span>
-            <button class="button primary" type="button" id="skill-install">Install here</button>
-          </div>
-        </div>
-
-        <h2>Local or hosted</h2>
-        <p>
-          Running it yourself keeps every byte on this machine and is the only way
-          to get the directory browser and the skill installer, which need a
-          filesystem. A Cloudflare deployment is for when the agent is somewhere
-          else — a cloud session, CI, a teammate — and it requires a token, since
-          there is no <code>127.0.0.1</code> to hide behind on a public address.
+          <code>.claude/skills/figsnap/SKILL.md</code> teaches an agent these
+          endpoints, and <code>figsnap-extractor</code> is an agent that pulls
+          several nodes and reports a summary rather than tens of kilobytes of
+          CSS. Both are generated with this relay's address already in them.
         </p>
         <p>
-          Either way the relay stores nothing: image URLs re-render through this
-          plugin rather than serving a cached copy, so no part of your design is
-          ever at rest.
-        </p>
-
-        <h2>Running it yourself</h2>
-        <p>Run this in the plugin's project directory and leave it running:</p>
-        <div class="card tight">
-          <div class="card-row">
-            <pre class="doc-code grow" id="page-cmd-plain">npm run relay</pre>
-            <button class="button icon" type="button" data-copy="page-cmd-plain" title="Copy">&#10697;</button>
-          </div>
-        </div>
-        <p>
-          A local relay has no accounts: it binds to <code>127.0.0.1</code>, so
-          anything already on your machine could reach it anyway. Set
-          <code>RELAY_TOKEN</code> if you want one anyway, and paste it into
-          Settings above.
+          The relay serves them; it cannot write them, having no filesystem of
+          its own. Two commands in the project you want them in:
         </p>
         <div class="card tight">
           <div class="card-row">
-            <pre class="doc-code grow" id="page-cmd-token">RELAY_TOKEN=$(openssl rand -hex 16) npm run relay</pre>
-            <button class="button icon" type="button" data-copy="page-cmd-token" title="Copy">&#10697;</button>
+            <pre class="doc-code grow" id="page-cmd-skill">mkdir -p .claude/skills/figsnap .claude/agents
+curl -s RELAY/skill/SKILL.md &gt; .claude/skills/figsnap/SKILL.md
+curl -s RELAY/skill/figsnap-extractor.md &gt; .claude/agents/figsnap-extractor.md</pre>
+            <button class="button icon" type="button" data-copy="page-cmd-skill" title="Copy">&#10697;</button>
           </div>
         </div>
-        <p>
-          <code>RELAY_PORT</code> changes the port. Figma blocks any address the
-          manifest does not list, so a different port also means editing
-          <code>networkAccess.devAllowedDomains</code> in
-          <code>manifest.json</code> and re-importing the plugin — Figma caches
-          the manifest.
-        </p>
 
         <h2>Checking it from a terminal</h2>
         <div class="card tight">
           <div class="card-row">
-            <pre class="doc-code grow" id="page-cmd-health">curl -s http://localhost:3055/health</pre>
+            <pre class="doc-code grow" id="page-cmd-health">curl -s https://your-relay.workers.dev/health</pre>
             <button class="button icon" type="button" data-copy="page-cmd-health" title="Copy">&#10697;</button>
           </div>
         </div>
 
-        <h2>Hosting it on Cloudflare</h2>
+        <h2>Running your own relay</h2>
         <p>
-          Deploy once, from the plugin's project directory:
+          The address above is one deployment; yours is two commands, from the
+          plugin's project directory:
         </p>
         <div class="card tight">
           <div class="card-row">
@@ -347,11 +297,10 @@ npm run worker:deploy</pre>
           </div>
         </div>
         <p>
-          A hosted relay has accounts, and signing in happens in this panel:
-          <strong>Sign in</strong> at the top of this page asks for an email and a
-          password, stores the token it gets back, and brings the socket and the
-          HTTP API up without another click. The same form is what the plugin
-          opens with when no session is stored.
+          Signing in happens in this panel: <strong>Sign in</strong> at the top
+          asks for an email and a password, stores the token it gets back, and
+          brings the socket and the HTTP API up without another click. It is what
+          the plugin opens with when no session is stored.
         </p>
         <p>
           The password is sent to your own relay over HTTPS and is never stored
@@ -366,7 +315,8 @@ npm run worker:deploy</pre>
           else's, so several designers can share one relay without colliding.
           Passwords are stored as a chained PBKDF2 hash, tokens only as a SHA-256
           hash, and signing in again issues a fresh token while older ones keep
-          working until revoked.
+          working until revoked. Your saved set is kept per account too, so it
+          follows you between machines — node ids and layer names, never a design.
         </p>
         <p>
           A newly deployed address must be added to

@@ -12,7 +12,7 @@ const out = []
 const check = (n, ok, d = '') => { out.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`) }
 
 // The plugin serves no manual of its own; the relay is the only surface.
-const panel = { httpBase: 'http://localhost:3055', relayState: 'open', nodeId: '21:10314', surface: 'http' }
+const panel = { httpBase: 'https://relay.test', relayState: 'open', nodeId: '21:10314', surface: 'http' }
 const html = renderDocsHtml(panel)
 
 // Hand-written markup, so balance is worth asserting.
@@ -33,7 +33,7 @@ check('embeds no plugin controls', !html.includes('id="installer"') && !html.inc
 
 const publicHtml = renderDocsHtml({ ...panel, surface: 'public', relayState: 'off' })
 check('public page omits any control', !publicHtml.includes('<button'))
-check('public page says the relay is the reader\'s own', publicHtml.includes('<strong>your own machine</strong>'))
+check('public page explains it is the relay talking', publicHtml.includes('served by the relay itself'))
 
 const md = renderDocsMarkdown(panel)
 check('markdown starts with the title', md.startsWith('# Figsnap'))
@@ -56,17 +56,17 @@ check('markdown covers every section', (() => {
 check('docs state that images are not stored', md.includes('Nothing is cached and nothing is stored'))
 check('docs describe the hosted option', md.includes('Durable Object'))
 
-const files = skillFiles({ httpBase: 'http://localhost:3055' })
+const files = skillFiles({ httpBase: 'https://relay.test' })
 check('skill and agent produced', files.length === 2)
 check('skill frontmatter', files[0].contents.startsWith('---\nname: figsnap'))
 check('agent frontmatter', files[1].contents.startsWith('---\nname: figsnap-extractor'))
 check('skill warns image urls re-render', files[0].contents.includes('re-renders the node on request'))
-check('skill notes the hosted local-only routes', files[0].contents.includes('answer `501`'))
+check('skill says which routes need the token', files[0].contents.includes('needs their token'))
 // The allow-list is the catalogue itself, so the skill cannot cite a route the
 // relay does not serve, and a new route does not fail this for the wrong reason.
 const routePrefixes = allEndpoints().map((endpoint) => endpoint.path.split('/:')[0])
 check('skill cites only real endpoints', (() => {
-  const cited = [...files[0].contents.matchAll(/localhost:3055(\/[a-z./:]+)/g)].map((m) => m[1].replace(/[.:]$/, ''))
+  const cited = [...files[0].contents.matchAll(/relay\.test(\/[a-z./:]+)/g)].map((m) => m[1].replace(/[.:]$/, ''))
   return cited.every((path) => routePrefixes.some((prefix) => path.startsWith(prefix)))
 })())
 

@@ -4,33 +4,9 @@
 // of the room scoping tests is that a token must reach its own account's designs
 // and nobody else's.
 
-import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { requireRelay } from './support/relay.mjs'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const PORT = 8792
-const worker = spawn(
-  'npx',
-  ['wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--port', String(PORT), '--persist-to', `.wrangler/test-${PORT}`],
-  { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] },
-)
-worker.stdout.on('data', () => {})
-worker.stderr.on('data', () => {})
-
-const BASE = `http://localhost:${PORT}`
-let up = false
-for (let attempt = 0; attempt < 90; attempt++) {
-  try {
-    if ((await fetch(`${BASE}/health`)).ok) { up = true; break }
-  } catch {}
-  await new Promise((resolve) => setTimeout(resolve, 500))
-}
-if (!up) {
-  console.log('SKIP  wrangler dev did not start; accounts not exercised')
-  worker.kill()
-  process.exit(0)
-}
+const BASE = requireRelay('accounts')
 
 const out = []
 const check = (name, ok, detail = '') => { out.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`) }
@@ -93,7 +69,7 @@ const bobRegistered = await (await post('/auth/register', bob)).json()
 check('a second account gets a different room', bobRegistered.room !== registered.room)
 
 // Alice's plugin connects; Bob must not see it.
-const socket = new WebSocket(`ws://localhost:${PORT}/plugin?token=${signedIn.token}`)
+const socket = new WebSocket(`${BASE.replace(/^http/, 'ws')}/plugin?token=${signedIn.token}`)
 await new Promise((resolve, reject) => {
   socket.addEventListener('open', resolve)
   socket.addEventListener('error', () => reject(new Error('refused')))
@@ -254,7 +230,7 @@ check('a missing token is legible to the panel', gated.status === 401 && cors(ga
 
 // Everything the panel does after signing in, in order: socket, then one HTTP
 // call over it. This is the whole "auto connect" path.
-const panelSocket = new WebSocket(`ws://localhost:${PORT}/plugin?token=${panelToken}`)
+const panelSocket = new WebSocket(`${BASE.replace(/^http/, 'ws')}/plugin?token=${panelToken}`)
 await new Promise((resolve, reject) => {
   panelSocket.addEventListener('open', resolve)
   panelSocket.addEventListener('error', () => reject(new Error('refused')))
@@ -335,7 +311,6 @@ const nonsense = await fetch(`${BASE}/auth/pair/claim`, {
 check('an unknown code is refused', nonsense.status === 400)
 
 socket.close()
-worker.kill()
 const failed = out.filter((ok) => !ok).length
 console.log(`\n${out.length - failed}/${out.length} passed`)
 process.exit(failed === 0 ? 0 : 1)

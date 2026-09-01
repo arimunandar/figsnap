@@ -471,7 +471,7 @@ body.mini.toasting .title {
   gap: 6px;
 }
 
-.installer-dirs {
+.chips {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -480,7 +480,7 @@ body.mini.toasting .title {
   padding: 2px;
 }
 
-.installer-dir {
+.chip {
   padding: 3px 8px;
   border: 1px solid var(--figma-color-border, #e6e6e6);
   border-radius: 12px;
@@ -491,14 +491,14 @@ body.mini.toasting .title {
 }
 
 /* The relay in use is shown but not offered as a destination. */
-.installer-dir.current {
+.chip.current {
   border-color: var(--figma-color-border-selected, #0d99ff);
   background: var(--figma-color-bg-selected, rgba(13, 153, 255, 0.15));
   cursor: default;
   font-weight: 600;
 }
 
-.installer-dir .forget {
+.chip .forget {
   margin-left: 6px;
   padding: 0 2px;
   border: none;
@@ -508,11 +508,11 @@ body.mini.toasting .title {
   cursor: pointer;
 }
 
-.installer-dir .forget:hover {
+.chip .forget:hover {
   color: var(--figma-color-text-danger, #f24822);
 }
 
-.installer-dir:hover {
+.chip:hover {
   border-color: var(--figma-color-border-selected, #0d99ff);
 }
 

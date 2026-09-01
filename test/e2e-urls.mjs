@@ -1,19 +1,14 @@
-import { spawn } from 'node:child_process'
+import { requireRelay, account, authenticateFetch } from './support/relay.mjs'
 
-const PORT = 3098
-const BASE = `http://127.0.0.1:${PORT}`
+const BASE = requireRelay('urls')
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
 const results = []
 const check = (n, ok, d = '') => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`) }
 
-const relay = spawn('node', [new URL('../server/relay.mjs', import.meta.url).pathname], { env: { ...process.env, RELAY_PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] })
-relay.stderr.on('data', (d) => console.error('[relay]', d.toString().trim()))
+const { token, headers } = await account(BASE, 'urls')
+authenticateFetch(BASE, headers)
 
-for (let i = 0; i < 50; i++) {
-  try { await fetch(`${BASE}/health`); break } catch { await new Promise((r) => setTimeout(r, 100)) }
-}
-
-const socket = new WebSocket(`ws://127.0.0.1:${PORT}/plugin`)
+const socket = new WebSocket(`${BASE.replace(/^http/, 'ws')}/plugin?token=${encodeURIComponent(token)}`)
 await new Promise((res, rej) => { socket.addEventListener('open', res); socket.addEventListener('error', rej) })
 const seen = []
 socket.addEventListener('message', (event) => {
@@ -59,7 +54,7 @@ check('POST /resolve works', resolved.rows?.[0]?.node?.name === 'Search', JSON.s
 const stringUrls = await (await post('/extract', { urls: 'one\nhttps://www.figma.com/design/K/N?node-id=1-2' })).json()
 check('urls as newline string also batches', seen.at(-1).command === 'extract_urls' && stringUrls.results?.length === 3)
 
-relay.kill()
+socket.close()
 const failed = results.filter((r) => !r).length
 console.log(`\n${results.length - failed}/${results.length} passed`)
 process.exit(failed === 0 ? 0 : 1)

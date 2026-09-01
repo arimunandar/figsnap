@@ -1,14 +1,13 @@
 // The Figsnap relay, hosted.
 //
 // Two halves. The docs and the Claude Code skill files are public and pure
-// functions of this repository. The relay API is gated behind RELAY_TOKEN and
-// forwards to a Durable Object holding the plugin's WebSocket, because a Worker
-// cannot hold a socket between requests.
+// functions of this repository. Everything else is gated behind an account
+// token and forwards to a Durable Object holding the plugin's WebSocket,
+// because a Worker cannot hold a socket between requests.
 //
-// Nothing about a design is stored: images are re-rendered through the live
-// socket instead of cached, and the plugin owns the saved set. Two local-only
-// routes are refused outright — a Worker has no filesystem, so it can neither
-// browse directories nor install the skill into a project.
+// Almost nothing is stored: images are re-rendered through the live socket
+// rather than cached, and the only thing kept is each account's saved set —
+// node ids and names, never a design. See library.js.
 
 import { docsSections, renderDocsHtml, renderDocsMarkdown } from '../../shared/docs.mjs'
 import { skillFiles } from '../../shared/skill.mjs'
@@ -27,12 +26,6 @@ import { authPage } from './auth-page.js'
 export { Room } from './room.js'
 export { Accounts } from './accounts.js'
 export { Library } from './library.js'
-
-const LOCAL_ONLY = {
-  '/fs': 'Browsing directories needs a filesystem. Run the relay locally for that.',
-  '/skill/install':
-    'Writing files needs a filesystem. Run the relay locally, or fetch /skill and write the files yourself.',
-}
 
 // The plugin panel is a sandboxed iframe, so every call it makes is
 // cross-origin with the literal origin "null" and needs CORS. Credentials are
@@ -412,10 +405,6 @@ export default {
       return Response.json(body, { headers: { 'access-control-allow-origin': '*' } })
     }
 
-    if (LOCAL_ONLY[path]) {
-      return Response.json({ error: LOCAL_ONLY[path] }, { status: 501 })
-    }
-
     const api = matchApi(path, request.method)
     if (api) {
       const auth = await authorise(request, env)
@@ -481,7 +470,7 @@ export default {
           '/saved', '/saved/move', '/folders', '/library', '/library/:fileId',
           '/assets/:nodeId@2x.png', '/events',
         ],
-        note: '/fs and /skill/install need a filesystem and are local-only.',
+        note: 'Fetch /skill to read the Claude Code skill files; a Worker cannot write them for you.',
       },
       { status: 404, headers: headers('application/json') },
     )

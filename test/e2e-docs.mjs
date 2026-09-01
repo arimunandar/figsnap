@@ -1,23 +1,20 @@
-import { spawn } from 'node:child_process'
+// The manual as the relay serves it. Docs describe the API rather than any
+// file, so they must answer with no token and no plugin connected — the only
+// routes that do.
 
-const PORT = 3095
-const TOKEN = 'docstok'
-const BASE = `http://127.0.0.1:${PORT}`
+import { requireRelay } from './support/relay.mjs'
+
+const BASE = requireRelay('docs')
 const out = []
 const check = (n, ok, d='') => { out.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`) }
 
-const relay = spawn('node', [new URL('../server/relay.mjs', import.meta.url).pathname], { env: { ...process.env, RELAY_PORT: String(PORT), RELAY_TOKEN: TOKEN }, stdio: ['ignore','pipe','pipe'] })
-relay.stderr.on('data', (d) => console.error('[relay]', d.toString().trim()))
-for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); break } catch { await new Promise(r => setTimeout(r, 100)) } }
-
-// Docs must work with a token set, no token sent, and no plugin connected.
 const html = await fetch(`${BASE}/docs`)
 const htmlBody = await html.text()
 check('GET /docs without a token', html.status === 200, `status ${html.status}`)
 check('serves a full html document', html.headers.get('content-type').startsWith('text/html') && htmlBody.startsWith('<!DOCTYPE html>'))
 check('html has the manual', htmlBody.includes('Figsnap') && htmlBody.includes('doc-table'))
-check('html reports the plugin offline', htmlBody.includes('not connected (off)') && htmlBody.includes('npm run relay'))
-check('port substituted from the request host', htmlBody.includes(`${BASE}/extract`), BASE)
+check('html tells the reader whose relay this is', htmlBody.includes('served by the relay itself'))
+check('address substituted from the request host', htmlBody.includes(`${BASE}/extract`), BASE)
 
 const md = await fetch(`${BASE}/docs.md`)
 const mdBody = await md.text()
@@ -42,7 +39,6 @@ check('json block types', [...types].every(t => ['lead','p','h3','code','ul','ta
 const guarded = await fetch(`${BASE}/tree`)
 check('other routes still need the token', guarded.status === 401, `status ${guarded.status}`)
 
-relay.kill()
 const failed = out.filter(v => !v).length
 console.log(`\n${out.length - failed}/${out.length} passed`)
 process.exit(failed === 0 ? 0 : 1)

@@ -1,18 +1,17 @@
-import { spawn } from 'node:child_process'
+import { requireRelay, account, authenticateFetch } from './support/relay.mjs'
 
-const PORT = 3096
-const BASE = `http://127.0.0.1:${PORT}`
+const BASE = requireRelay('saved')
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
 const out = []
 const check = (n, ok, d = '') => { out.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`) }
 
-const relay = spawn('node', [new URL('../server/relay.mjs', import.meta.url).pathname], { env: { ...process.env, RELAY_PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] })
-relay.stderr.on('data', (d) => console.error('[relay]', d.toString().trim()))
-for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); break } catch { await new Promise((r) => setTimeout(r, 100)) } }
 
 // Fake plugin with a real in-memory saved set, so ordering and dedupe are exercised.
 let store = []
-const socket = new WebSocket(`ws://127.0.0.1:${PORT}/plugin`)
+const { token, headers } = await account(BASE, 'saved')
+authenticateFetch(BASE, headers)
+
+const socket = new WebSocket(`${BASE.replace(/^http/, 'ws')}/plugin?token=${encodeURIComponent(token)}`)
 await new Promise((res, rej) => { socket.addEventListener('open', res); socket.addEventListener('error', rej) })
 const seen = []
 const ex = (name, id) => ({ id, name, nodeType: 'FRAME', width: 375, height: 812, layerCount: 9, truncated: false, css: '.a{}', tsx: `export function ${name}(){}`, moduleCss: '.a{}', png: PNG })
@@ -63,7 +62,7 @@ check('DELETE all', seen.at(-1) === 'clear_saved' && r.entries.length === 0)
 const bad = await fetch(`${BASE}/saved`, { method: 'PUT' })
 check('405 on unsupported method', bad.status === 405, `status ${bad.status}`)
 
-relay.kill()
+socket.close()
 const failed = out.filter((v) => !v).length
 console.log(`\n${out.length - failed}/${out.length} passed`)
 process.exit(failed === 0 ? 0 : 1)

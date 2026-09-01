@@ -32,27 +32,23 @@ export function docsSections({ httpBase, relayState, nodeId, surface = 'http' })
     {
       type: 'p',
       text:
-        'The relay runs either on your own machine (`npm run relay`, bound to `127.0.0.1`) or on Cloudflare, where a Durable Object holds the socket because a Worker cannot. The plugin does not care which: pick the address on the Relay page. A hosted relay has accounts and always requires a token, and two routes stay local-only — `/fs` and `/skill/install` need a filesystem, so a hosted one answers `501`.',
+        'The relay is a Cloudflare Worker, where a Durable Object holds the socket because a Worker cannot hold one between requests. It has accounts: you sign in inside the plugin, and every request carries the token it gives you.',
     },
   ]
 
   if (isPublic) {
-    relayBlocks.push(
-      {
-        type: 'p',
-        text:
-          'The relay runs on **your own machine**, not on the host serving this page. Nothing about any Figma file passes through here: this address serves documentation and the skill files, and holds no connection to any plugin. The endpoints below answer on your local relay once you start it.',
-      },
-      { type: 'code', text: 'npm run relay' },
-    )
+    relayBlocks.push({
+      type: 'p',
+      text:
+        'This page is served by the relay itself. The endpoints below answer here, for whoever holds a token, and only while a plugin is connected to that account.',
+    })
   } else {
     relayBlocks.push({
       type: 'p',
       text: connected
         ? 'Relay status right now: **connected**.'
-        : `Relay status right now: **not connected (${relayState})**. Start it with:`,
+        : `Relay status right now: **not connected (${relayState})**. Open the plugin and sign in.`,
     })
-    if (!connected) relayBlocks.push({ type: 'code', text: 'npm run relay' })
   }
 
   return [
@@ -272,16 +268,12 @@ export function docsSections({ httpBase, relayState, nodeId, surface = 'http' })
         {
           type: 'p',
           text:
-            'A local relay is the other option — `ws://localhost:3055/plugin`, no accounts, since it binds to `127.0.0.1` — and it is the only kind with a filesystem, so `/fs` and `/skill/install` need it. Switch between them on the Relay page; each address remembers its own token, and nothing needs recompiling. A token is sent as `x-relay-token` on requests and as `?token=` on the socket.',
-        },
-        {
-          type: 'code',
-          text: 'RELAY_PORT=3055 RELAY_TOKEN=$(openssl rand -hex 16) npm run relay',
+            'The address lives on the Relay page, and each one remembers its own token, so moving between deployments is a click rather than a recompile. A token is sent as `x-relay-token` on requests and as `?token=` on the socket.',
         },
         {
           type: 'p',
           text:
-            'One catch that is not the plugin’s doing: Figma blocks any network address the manifest does not list. `manifest.json` allows port 3055 out of the box, so a different port means editing `networkAccess.devAllowedDomains` and re-importing the plugin — Figma caches the manifest.',
+            'One catch that is not the plugin’s doing: Figma blocks any network address the manifest does not list. A relay of your own means adding its exact host to `networkAccess.devAllowedDomains` in `manifest.json` and re-importing the plugin — Figma caches the manifest. Add the host, not a `*.workers.dev` wildcard, which would let this plugin reach every Worker on the internet.',
         },
         { type: 'h3', text: 'Walking the tree' },
         {
@@ -371,7 +363,7 @@ export function docsSections({ httpBase, relayState, nodeId, surface = 'http' })
         {
           type: 'p',
           text:
-            'The relay listens on `127.0.0.1` only. Without a token, any process on your machine can read the open Figma file through it. Set `RELAY_TOKEN` before starting the relay to require one, sent as an `x-relay-token` header, and append `?token=…` to the plugin’s relay URL to match. `/health` and the docs stay readable without it.',
+            'Every route that touches a design needs a token, sent as an `x-relay-token` header or `?token=` on the socket. `/health`, the docs and the skill files stay readable without one, since they describe the API rather than any file. A token maps to one account and one room: it reaches the plugin signed in as that account and nothing else.',
         },
       ],
     },
@@ -391,16 +383,16 @@ export function docsSections({ httpBase, relayState, nodeId, surface = 'http' })
         {
           type: 'p',
           text:
-            'The plugin does this for you: the **Relay** page has a directory browser and an **Install here** button, against a relay running on your own machine. Over HTTP it is two calls.',
+            'The relay serves the files; it cannot write them, having no filesystem of its own. Two commands in the project you want them in — the Relay page prints these with the address already filled in:',
         },
         {
           type: 'code',
-          text: `# read the files\ncurl -s ${httpBase}/skill\n\n# write them into a project\ncurl -s -X POST ${httpBase}/skill/install \\\n  -H 'content-type: application/json' \\\n  -d '{"directory":"/path/to/your/project"}'`,
+          text: `mkdir -p .claude/skills/figsnap .claude/agents\ncurl -s ${httpBase}/skill/SKILL.md > .claude/skills/figsnap/SKILL.md\ncurl -s ${httpBase}/skill/figsnap-extractor.md > .claude/agents/figsnap-extractor.md`,
         },
         {
           type: 'p',
           text:
-            'An existing install is never overwritten silently: the call answers `409` and lists the files, and you repeat it with `force: true` to replace them.',
+            '`/skill` returns both as JSON if you would rather write them out yourself.',
         },
       ],
     },

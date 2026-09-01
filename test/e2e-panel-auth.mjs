@@ -6,44 +6,23 @@
 // state machine, the socket and the HTTP calls are the shipped ones, so this
 // fails if the gate stops opening, stops connecting, or stops resuming.
 
-import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { JSDOM } from 'jsdom'
 import { allEndpoints } from '../shared/endpoints.mjs'
+import { requireRelay } from './support/relay.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const PORT = 8793
-const BASE = `http://localhost:${PORT}`
-const SOCKET = `ws://localhost:${PORT}/plugin`
-// Nothing listens here, which is what a local relay looks like before it starts.
+const BASE = requireRelay('the panel flow')
+const SOCKET = `${BASE.replace(/^http/, 'ws')}/plugin`
+// Nothing listens here: a relay address that is wrong or a machine that is offline.
 const NOTHING = 'ws://localhost:3059/plugin'
 
 const out = []
 const check = (name, ok, detail = '') => {
   out.push(ok)
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`)
-}
-
-const worker = spawn('npx', ['wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--port', String(PORT), '--persist-to', `.wrangler/test-${PORT}`], {
-  cwd: root,
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-worker.stdout.on('data', () => {})
-worker.stderr.on('data', () => {})
-
-let up = false
-for (let attempt = 0; attempt < 90; attempt++) {
-  try {
-    if ((await fetch(`${BASE}/health`)).ok) { up = true; break }
-  } catch {}
-  await new Promise((resolve) => setTimeout(resolve, 500))
-}
-if (!up) {
-  console.log('SKIP  wrangler dev did not start; the panel flow is not exercised')
-  worker.kill()
-  process.exit(0)
 }
 
 const html = await readFile(join(root, 'dist/ui.html'), 'utf8')
@@ -351,20 +330,23 @@ check('an expired session is sent back to the form',
   expired.id('auth-message').textContent.includes('expired'), expired.id('auth-message').textContent)
 check('and the dead token is dropped, not retried', expired.settings.token === '')
 
-// The escape hatch: a relay with no accounts to sign in to needs no gate.
-expired.id('auth-local').click()
-await until(() => expired.workspace().hidden === false, 20_000, 'the workspace')
-check('choosing a local relay closes the gate', expired.id('auth-page').hidden === true)
-check('and stores no token for it', expired.settings.token === '' && expired.settings.url.includes('localhost:3055'))
 expired.window.close()
 
-// A relay that answers nothing is a connection problem, not a sign-in problem.
+// An unreachable relay is still a relay with accounts, so the gate is still the
+// only sensible view — there is nothing behind it to show.
 const unreachable = openPanel({ url: NOTHING })
-await until(() => unreachable.workspace().hidden === false, 20_000, 'the workspace')
-check('an unreachable relay does not ask for an account', unreachable.id('auth-page').hidden === true)
+await until(() => unreachable.id('auth-form').hidden === false, 20_000, 'the form')
+check('an unreachable relay still asks for an account',
+  unreachable.id('auth-page').hidden === false && unreachable.workspace().hidden === true)
+unreachable.id('auth-email').value = 'someone@example.test'
+unreachable.id('auth-password').value = 'a password long enough'
+unreachable.submit()
+await until(() => unreachable.id('auth-message').textContent.includes('Could not reach'), 20_000, 'the failure')
+check('and says it could not be reached, rather than blaming the password',
+  unreachable.id('auth-message').textContent.includes('Could not reach'),
+  unreachable.id('auth-message').textContent)
 unreachable.window.close()
 
-worker.kill()
 const failed = out.filter((ok) => !ok).length
 console.log(`\n${out.length - failed}/${out.length} passed`)
 process.exit(failed === 0 ? 0 : 1)

@@ -32,7 +32,7 @@ const floating = makeNode('6:2', 'Overlay', 'FRAME', [], { position: 'absolute',
 const holder = makeNode('6:1', 'Holder', 'FRAME', [floating], { display: 'block' })
 const fixtures = makeNode('5:0', 'Fixtures', 'FRAME', [pinned, holder])
 
-const plugin = await startPlugin({ port: 3099, pageChildren: [top], offPage: [fixtures] })
+const plugin = await startPlugin({ label: 'tree', pageChildren: [top], offPage: [fixtures] })
 const { get, body } = plugin
 
 // ------------------------------------------------------------------ depth
@@ -69,11 +69,11 @@ check('and reports the node it walked from',
 const shallow = await get('/children/2%3A1')
 check('/children still defaults to one level', shallow.rows[0].children === undefined)
 
-const nonsense = await fetch(`${plugin.base}/tree?depth=nope`)
+const nonsense = await fetch(`${plugin.base}/tree?depth=nope`, { headers: plugin.headers })
 const nonsenseBody = await nonsense.json()
 check('a bad depth is refused, not guessed',
   nonsense.status === 400 && nonsenseBody.error.includes('depth must be'), nonsenseBody.error)
-const zero = await (await fetch(`${plugin.base}/tree?depth=0`)).json()
+const zero = await (await fetch(`${plugin.base}/tree?depth=0`, { headers: plugin.headers })).json()
 check('depth=0 is refused too', typeof zero.error === 'string')
 
 // ----------------------------------------------------------------- format

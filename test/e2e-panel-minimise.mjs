@@ -41,7 +41,10 @@ window.addEventListener('message', (event) => {
   if (!message || typeof message.type !== 'string') return
   if (message.type === 'ready') {
     // A local relay needs no account, so the gate never appears.
-    send({ type: 'settings', url: 'ws://localhost:3055/plugin', token: '', email: '', profiles: [] })
+    // A stored session, so the panel opens on the workspace rather than the
+    // gate. The relay itself is unreachable here; nothing in this suite needs it.
+    send({ type: 'settings', url: 'wss://relay.test/plugin', token: 'a stored token',
+           email: 'you@example.test', profiles: [] })
     return
   }
   posted.push(message)

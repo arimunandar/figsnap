@@ -16,7 +16,7 @@ const alpha = makeNode('1:1', 'Alpha')
 const beta = makeNode('1:2', 'Beta')
 const gamma = makeNode('1:3', 'Gamma')
 
-const plugin = await startPlugin({ port: 3098, pageChildren: [alpha, beta, gamma] })
+const plugin = await startPlugin({ label: 'folders', pageChildren: [alpha, beta, gamma] })
 const { figma, storage, get, body, toMain } = plugin
 
 const countIn = (folders, name) => folders.find((folder) => folder.name === name)?.count
